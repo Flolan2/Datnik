@@ -167,21 +167,11 @@ def load_dat_scan(input_folder):
     except Exception as e:
         raise Exception(f"Error reading DatScan.csv: {e}")
     
-    # Rename columns for clarity.
+    # Rename columns for clarity, only including new software and Z-scores.
     rename_dict = {
         "No.": "Patient ID",
         "Date of Scan (DOS)": "Date of Scan",
         "Gender       0 = female\n1= male": "Gender",
-        
-        "Striatum Right: old software": "Striatum_Right_old",
-        "Striatum Left: old software": "Striatum_Left_old",
-        "Putamen Right: old software": "Putamen_Right_old",
-        "Putamen Left: old software": "Putamen_Left_old",
-        "Caudate Right: old software": "Caudate_Right_old",
-        "Caudate Left: old software": "Caudate_Left_old",
-        "Mean striatum: old software": "Mean_striatum_old",
-        "Mean Putamen: old software": "Mean_Putamen_old",
-        "Mean Caudate: old software": "Mean_Caudate_old",
         
         "Striatum Right: Z-Werte (new software)": "Striatum_Right_Z",
         "Striatum Left: Z-Werte (new software)": "Striatum_Left_Z",
@@ -248,8 +238,8 @@ def merge_dat_scan(kinematic_df, dat_scan_df):
             # If hand condition is unknown, leave imaging data as missing.
             return row
         
-        # For each imaging key and for each software version, keep only the contralateral side data.
-        for version in ['old', 'Z', 'new']:
+        # For each imaging key and for each relevant software version, keep only the contralateral side data.
+        for version in ['Z', 'new']:
             for key in imaging_keys:
                 col_name = f"{key}_{side}_{version}"
                 new_col_name = f"Contralateral_{key}_{version}"
@@ -260,7 +250,7 @@ def merge_dat_scan(kinematic_df, dat_scan_df):
     
     # Optionally, drop the original imaging columns if you want only the contralateral ones in the final output.
     cols_to_drop = [col for col in merged_df.columns 
-                    if any(tag in col for tag in ['_old', '_Z', '_new']) and not col.startswith("Contralateral_")]
+                    if any(tag in col for tag in ['_Z', '_new']) and not col.startswith("Contralateral_")]
     merged_df.drop(columns=cols_to_drop, inplace=True)
     
     return merged_df

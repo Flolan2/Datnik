@@ -26,6 +26,7 @@ kinematic_cols = [
     "cvcycleduration", "cvspeed", "cvrmsvelocity", "cvopeningspeed", "cvclosingspeed"
 ]
 
+# Only imaging columns for new software and Z-scores are expected
 dat_scan_cols = [col for col in df.columns if col.startswith("Contralateral_")]
 
 # -------------------------
@@ -41,8 +42,14 @@ for kinematic in kinematic_cols:
         data_pair = df[[kinematic, dat]].copy()
         print(f"Before conversion - {kinematic}: {data_pair[kinematic].head().tolist()}")
         print(f"Before conversion - {dat}: {data_pair[dat].head().tolist()}")
-        data_pair[kinematic] = pd.to_numeric(data_pair[kinematic].astype(str).str.strip().str.replace(',', '.'), errors='coerce')
-        data_pair[dat] = pd.to_numeric(data_pair[dat].astype(str).str.strip().str.replace(',', '.'), errors='coerce')
+        data_pair[kinematic] = pd.to_numeric(
+            data_pair[kinematic].astype(str).str.strip().str.replace(',', '.'),
+            errors='coerce'
+        )
+        data_pair[dat] = pd.to_numeric(
+            data_pair[dat].astype(str).str.strip().str.replace(',', '.'),
+            errors='coerce'
+        )
         print(f"After conversion - {kinematic}: {data_pair[kinematic].head().tolist()}")
         print(f"After conversion - {dat}: {data_pair[dat].head().tolist()}")
         data_pair = data_pair.dropna()
@@ -68,22 +75,26 @@ results_df.to_csv(output_file, index=False)
 print(f"Correlation results saved to {output_file}")
 
 # -------------------------
-# 3. Build Paired Significant Findings (Modified with Z-scores)
+# 3. Build Paired Significant Findings (Using New Software Values and Z-scores)
 # -------------------------
 
-significance_level = 0.05
+significance_level = 0.001
 paired_results = []
 regions = ["Striatum", "Putamen", "Caudate"]
 
 for region in regions:
     for kin in kinematic_cols:
-        # Replace the old column with the Z-score column
+        # Use Z-score and new measure columns only
         z_col = f"Contralateral_{region}_Z"
         new_col = f"Contralateral_{region}_new"
-        z_result = results_df[(results_df["Kinematic Variable"] == kin) &
-                              (results_df["DatScan Variable"] == z_col)]
-        new_result = results_df[(results_df["Kinematic Variable"] == kin) &
-                                (results_df["DatScan Variable"] == new_col)]
+        z_result = results_df[
+            (results_df["Kinematic Variable"] == kin) &
+            (results_df["DatScan Variable"] == z_col)
+        ]
+        new_result = results_df[
+            (results_df["Kinematic Variable"] == kin) &
+            (results_df["DatScan Variable"] == new_col)
+        ]
         # Filter only significant results
         z_result_sig = z_result[z_result["P-value"] < significance_level]
         new_result_sig = new_result[new_result["P-value"] < significance_level]
@@ -106,9 +117,8 @@ paired_significant_df = pd.DataFrame(paired_results)
 print("Paired Significant Findings:")
 print(paired_significant_df)
 
-
 # -------------------------
-# 4. Dual Scatter Plot for Kinematic vs. Datscan Regions (Using Z-scores)
+# 4. Dual Scatter Plot for Kinematic vs. DatScan Regions (Using Z-scores and New Measures)
 # -------------------------
 
 try:
@@ -120,17 +130,17 @@ else:
     for idx, row in paired_significant_df.iterrows():
         region = row["Anatomical Region"]
         kin = row["Kinematic Variable"]
-        # Change from old to Z-score column
+        # Use the Z-score and new measure columns
         z_col = f"Contralateral_{region}_Z"
         new_col = f"Contralateral_{region}_new"
         
-        # Grab the *best* row in results_df for the Z-score column
+        # Grab the best row in results_df for the Z-score column
         z_stats = results_df[
             (results_df["Kinematic Variable"] == kin) &
             (results_df["DatScan Variable"] == z_col)
         ].sort_values(by="P-value", ascending=True).iloc[0]
         
-        # Grab the *best* row in results_df for the new column
+        # Grab the best row in results_df for the new measure column
         new_stats = results_df[
             (results_df["Kinematic Variable"] == kin) &
             (results_df["DatScan Variable"] == new_col)
@@ -173,11 +183,11 @@ else:
             plot_dual_scatter(
                 data=plot_data,
                 kinematic_col=kin,
-                old_col=z_col,  # Here, z_col represents the new "old" measure
+                z_col=z_col,
                 new_col=new_col,
-                r_old=r_z,      # Renaming variable to r_z to clarify it comes from Z-scores
-                p_old=p_z,
-                r2_old=r2_z,
+                r_z=r_z,
+                p_z=p_z,
+                r2_z=r2_z,
                 r_new=r_new,
                 p_new=p_new,
                 r2_new=r2_new,
