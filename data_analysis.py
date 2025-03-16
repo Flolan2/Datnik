@@ -6,7 +6,7 @@ data_analysis.py
 This module builds a predictive pipeline that uses kinematic data to predict a DatScan uptake variable.
 It uses Recursive Feature Elimination (RFE) with a RandomForestRegressor estimator. The pipeline includes data scaling,
 RFE-based feature selection, and regression. Results are evaluated with cross-validation, additional metrics,
-and a grid search to determine the optimal number of features.
+and an optional grid search to determine the optimal number of features.
 
 Configuration defaults:
     - Task: "ft" (Fingertapping) or "hm" (Hand Movements)
@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,7 +28,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import RFE
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import cross_val_score, cross_val_predict, LeaveOneOut, GridSearchCV, permutation_test_score
+from sklearn.model_selection import (cross_val_score, cross_val_predict, LeaveOneOut, 
+                                     GridSearchCV, permutation_test_score)
 from sklearn.metrics import mean_squared_error, r2_score
 
 # Define the list of base kinematic variables (without the task prefix)
@@ -73,17 +75,10 @@ def plot_predicted_vs_actual(X, y, pipeline, output_file="predicted_vs_actual.pn
     """
     Plots a scatter plot of actual vs. predicted values using LOOCV predictions,
     and annotates the plot with LOOCV performance metrics (MSE and R²).
-    
-    Parameters:
-        X (pd.DataFrame): Predictor features.
-        y (pd.Series): Actual target values.
-        pipeline (Pipeline): The fitted predictive pipeline.
-        output_file (str): File path to save the plot.
     """
     loo = LeaveOneOut()
     predictions = cross_val_predict(pipeline, X, y, cv=loo)
     
-    # Compute metrics
     mse_val = mean_squared_error(y, predictions)
     r2_val = r2_score(y, predictions)
     
@@ -94,7 +89,6 @@ def plot_predicted_vs_actual(X, y, pipeline, output_file="predicted_vs_actual.pn
     plt.ylabel("Predicted DatScan Uptake")
     plt.title("Predicted vs. Actual Values (LOOCV)")
     
-    # Annotate with performance metrics
     annotation_text = f"LOOCV MSE: {mse_val:.2f}\nLOOCV R²: {r2_val:.2f}"
     plt.gca().text(0.05, 0.95, annotation_text, transform=plt.gca().transAxes,
                    fontsize=10, verticalalignment='top',
@@ -104,37 +98,28 @@ def plot_predicted_vs_actual(X, y, pipeline, output_file="predicted_vs_actual.pn
     plt.savefig(output_file, dpi=300)
     plt.close()
     print(f"Predicted vs. Actual plot saved to {output_file}")
-
+    return mse_val, r2_val
 
 def grid_search_n_features(file_path, task="ft", target="Contralateral_Striatum_Z", cv="loo", feature_range=range(3, 16)):
     """
     Perform grid search over a range of n_features to determine the optimal number of features.
+    Also saves a scree plot showing CV score vs. number of features.
     
-    Parameters:
-        feature_range: Iterable of integers for the number of features to test.
-        
     Returns:
-        best_n: The optimal number of features.
-        best_score: The best cross-validated score (e.g., negative MSE).
+        best_n, best_score, grid_results, scree_plot_file
     """
     X, y = load_data(file_path, task, target)
     estimator = RandomForestRegressor(n_estimators=100, random_state=42)
     
-    # We will use a pipeline with scaling, RFE, and the estimator.
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('feature_selection', RFE(estimator)),
         ('regressor', estimator)
     ])
     
-    param_grid = {
-        'feature_selection__n_features_to_select': list(feature_range)
-    }
+    param_grid = {'feature_selection__n_features_to_select': list(feature_range)}
     
-    if isinstance(cv, str) and cv.lower() == "loo":
-        cv_object = LeaveOneOut()
-    else:
-        cv_object = cv
+    cv_object = LeaveOneOut() if (isinstance(cv, str) and cv.lower() == "loo") else cv
     
     grid = GridSearchCV(pipeline, param_grid, cv=cv_object, scoring='neg_mean_squared_error', n_jobs=-1)
     grid.fit(X, y)
@@ -142,91 +127,145 @@ def grid_search_n_features(file_path, task="ft", target="Contralateral_Striatum_
     best_n = grid.best_params_['feature_selection__n_features_to_select']
     best_score = grid.best_score_
     print(f"Optimal number of features for task '{task}': {best_n} with CV score: {best_score:.4f}")
-    return best_n, best_score
+    
+    grid_results = {params['feature_selection__n_features_to_select']: score 
+                    for params, score in zip(grid.cv_results_['params'], grid.cv_results_['mean_test_score'])}
+    
+    scree_plot_file = f"scree_plot_{task}.png"
+    feature_numbers = sorted(grid_results.keys())
+    cv_scores = [grid_results[n] for n in feature_numbers]
+    plt.figure(figsize=(8,6))
+    plt.plot(feature_numbers, cv_scores, marker='o')
+    plt.xlabel("Number of Features Selected")
+    plt.ylabel("Mean CV Score (neg MSE)")
+    plt.title(f"Scree Plot for Task '{task}'")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(scree_plot_file, dpi=300)
+    plt.close()
+    print(f"Scree plot saved to {scree_plot_file}")
+    
+    return best_n, best_score, grid_results, scree_plot_file
 
-def run_analysis(file_path, task="ft", target="Contralateral_Striatum_Z", n_features=None, cv="loo"):
+def run_analysis(file_path, task="ft", target="Contralateral_Striatum_Z", n_features=5, cv="loo"):
     """
     Run the predictive analysis pipeline with a RandomForestRegressor.
-    If n_features is None, perform a grid search to determine the optimal number of features.
+    The default is to use a fixed 5-feature model.
+    
+    Returns a tuple: (fitted pipeline, results dictionary)
     """
     print(f"\n--- Running Predictive Analysis for task '{task}' ---")
     print("Loading data...")
     X, y = load_data(file_path, task, target)
     print(f"Data loaded. Using {X.shape[1]} kinematic features and {len(y)} samples.")
     
-    # Determine optimal number of features if not provided
+    results = {"task": task, "model_type": f"Fixed {n_features}-feature"}
+    
+    # If n_features is None, you can run grid search manually if desired.
     if n_features is None:
-        print("Performing grid search to determine optimal number of features...")
-        n_features, _ = grid_search_n_features(file_path, task, target, cv=cv)
+        print("Grid search not run automatically. Please call grid_search_n_features() separately if needed.")
+        return None, None
     
-    # Define the base estimator
     estimator = RandomForestRegressor(n_estimators=100, random_state=42)
-    
-    # Set up RFE with the chosen number of features
     rfe = RFE(estimator, n_features_to_select=n_features)
     
-    # Create the pipeline: scaling, feature selection, and regression
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('feature_selection', rfe),
         ('regressor', estimator)
     ])
     
-    # Determine cross-validation object
-    if isinstance(cv, str) and cv.lower() == "loo":
-        cv_object = LeaveOneOut()
-    else:
-        cv_object = cv
+    cv_object = LeaveOneOut() if (isinstance(cv, str) and cv.lower() == "loo") else cv
 
-    # Evaluate model performance (MSE) using cross-validation
     print("Performing cross-validation...")
     mse_scores = -cross_val_score(pipeline, X, y, cv=cv_object, scoring='neg_mean_squared_error')
     mean_mse = mse_scores.mean()
     print(f"Mean Cross-Validated MSE for task '{task}': {mean_mse:.4f}")
     
-    # Also compute R^2 using LOOCV predictions
     predictions = cross_val_predict(pipeline, X, y, cv=cv_object)
     r2 = r2_score(y, predictions)
-    print(f"Cross-Validated R^2 for task '{task}': {r2:.4f}")
+    print(f"Cross-Validated R² for task '{task}': {r2:.4f}")
     
-    # Perform a permutation test to assess model significance
     score, permutation_scores, p_value = permutation_test_score(
         pipeline, X, y, scoring="neg_mean_squared_error", cv=cv_object, n_permutations=100, n_jobs=-1
     )
     print(f"Permutation test p-value for task '{task}': {p_value:.4f}")
     
-    # Fit the pipeline on the full dataset
     print("Fitting pipeline on the full dataset...")
     pipeline.fit(X, y)
     print("Pipeline training complete.")
     
-    # Print the selected features
     selected_mask = pipeline.named_steps['feature_selection'].support_
-    selected_features = X.columns[selected_mask]
+    selected_features = X.columns[selected_mask].tolist()
     print("Selected kinematic features via RFE:")
-    print(selected_features.tolist())
+    print(selected_features)
     
-    # Plot predicted vs. actual values using LOOCV predictions
     plot_file = f"predicted_vs_actual_{task}.png"
-    plot_predicted_vs_actual(X, y, pipeline, output_file=plot_file)
+    mse_val, r2_val = plot_predicted_vs_actual(X, y, pipeline, output_file=plot_file)
     
-    return pipeline
+    results.update({
+        "n_features_used": n_features,
+        "mean_cv_mse": mean_mse,
+        "cv_r2": r2,
+        "permutation_test_p": p_value,
+        "selected_features": selected_features,
+        "predicted_vs_actual_plot": plot_file
+    })
+    
+    return pipeline, results
+
+def run_dual_analysis(file_path, task="ft", target="Contralateral_Striatum_Z", cv="loo", run_grid_search=False):
+    """
+    Run the analysis with a fixed 5-feature model by default.
+    If run_grid_search is True, also run the grid search model.
+    
+    Returns a dictionary with results.
+    """
+    print(f"\n=== Analysis for task '{task}' ===")
+    
+    # Run fixed 5-feature model
+    print("\nRunning fixed 5-feature model (low complexity)...")
+    pipeline_fixed, results_fixed = run_analysis(file_path, task, target, n_features=5, cv=cv)
+    
+    results = {"fixed_model": results_fixed}
+    
+    # Optionally run grid search model if requested
+    if run_grid_search:
+        print("\nRunning grid search model for optimal feature selection...")
+        # Here, passing n_features=None triggers the grid search function manually if desired.
+        best_n, best_score, grid_results, scree_plot_file = grid_search_n_features(file_path, task, target, cv=cv)
+        pipeline_grid, results_grid = run_analysis(file_path, task, target, n_features=best_n, cv=cv)
+        results_grid["model_type"] = "Grid Search"
+        results_grid["grid_search"] = {"best_n": best_n, "best_score": best_score,
+                                       "grid_results": grid_results, "scree_plot": scree_plot_file}
+        results["grid_search_model"] = results_grid
+    
+    return results
+
+def save_analysis_results(results, task, output_dir="results"):
+    """
+    Save the results dictionary to a JSON file.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_file = os.path.join(output_dir, f"analysis_results_{task}.json")
+    with open(output_file, "w") as f:
+        json.dump(results, f, indent=4)
+    print(f"Analysis results saved to {output_file}")
 
 if __name__ == '__main__':
-    # Determine the path to the merged_summary.csv file
     script_dir = os.path.dirname(os.path.abspath(__file__))
     input_folder = os.path.join(script_dir, 'Input')
     merged_file = os.path.join(input_folder, 'merged_summary.csv')
     
-    # Define the tasks to loop over
     tasks = ["ft", "hm"]
+    all_results = {}
     
-    # Run the analysis for each task
-    pipelines = {}
+    # Set run_grid_search flag to False to run only the fixed model by default.
     for task in tasks:
         try:
-            # If n_features is not provided, grid search is performed to choose the optimal number
-            pipeline = run_analysis(file_path=merged_file, task=task, target="Contralateral_Striatum_Z", n_features=None, cv="loo")
-            pipelines[task] = pipeline
+            results = run_dual_analysis(file_path=merged_file, task=task, target="Contralateral_Striatum_Z", cv="loo", run_grid_search=False)
+            all_results[task] = results
+            save_analysis_results(results, task)
         except Exception as e:
             print(f"An error occurred during analysis for task '{task}': {e}")
