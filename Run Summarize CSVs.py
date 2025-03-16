@@ -51,16 +51,16 @@ def parse_kinematic_filename(filename):
     
     return date_of_visit, patient_id, med_condition, kinematic_task, hand_condition
 
-def process_input_folder(folder_path):
+def process_kinematic_subfolder(folder_path, prefix):
+    """
+    Process all CSV files in a specific subfolder.
+    The function leaves the common keys unprefixed (Patient ID, Date of Visit, Medication Condition)
+    but renames task-specific metadata and all kinematic variable columns with the given prefix.
+    """
     summary_list = []
     
-    # Iterate over all files in the folder
     for filename in os.listdir(folder_path):
         if not filename.endswith('.csv'):
-            continue
-        
-        # Skip any summary files if present
-        if filename in ['summary.csv', 'merged_summary.csv']:
             continue
         
         file_path = os.path.join(folder_path, filename)
@@ -78,7 +78,7 @@ def process_input_folder(folder_path):
             print(f"Skipping file {filename}: could not parse date {date_of_visit}")
             continue
         
-        # Detect separator for the kinematic CSV file
+        # Detect separator for the CSV file
         try:
             file_separator = detect_separator(file_path)
         except Exception as e:
@@ -91,69 +91,26 @@ def process_input_folder(folder_path):
             # Lowercase the attribute names for consistency
             data_df['Attribute'] = data_df['Attribute'].str.lower()
             variables = data_df.set_index('Attribute')['Value'].to_dict()
+            
+            # Add prefix to each kinematic variable key
+            variables = {f"{prefix}_{k}": v for k, v in variables.items()}
         except Exception as e:
             print(f"Skipping file {filename}: could not read or process CSV file")
             continue
         
-        # Create a summary row for this file
+        # Create summary row with common keys unprefixed
         summary_row = {
             'Patient ID': patient_id,
             'Date of Visit': date_of_visit_str,
             'Medication Condition': med_condition,
-            'Kinematic Task': kinematic_task,
-            'Hand Condition': hand_condition
+            # For task-specific metadata, add the prefix
+            f"{prefix}_Kinematic Task": kinematic_task,
+            f"{prefix}_Hand Condition": hand_condition
         }
         summary_row.update(variables)
         summary_list.append(summary_row)
     
-    # Create a DataFrame from the summary list
-    summary_df = pd.DataFrame(summary_list)
-    
-    if 'Date of Visit' in summary_df.columns:
-        # Standardize Patient ID: convert to int then to string (e.g., "078" becomes "78")
-        def convert_pid(pid):
-            try:
-                return str(int(pid))
-            except Exception as e:
-                return pid
-        summary_df['Patient ID'] = summary_df['Patient ID'].apply(convert_pid)
-        
-        # Debug: print kinematic Patient IDs
-        print("Kinematic Patient IDs:", summary_df['Patient ID'].unique())
-        
-        # Convert 'Date of Visit' to datetime for sorting and calculation
-        summary_df['Date of Visit'] = pd.to_datetime(summary_df['Date of Visit'], format='%d.%m.%Y')
-        summary_df.drop_duplicates(inplace=True)
-        
-        # Calculate 'Days Since First Visit' for each patient
-        summary_df['Days Since First Visit'] = summary_df.groupby('Patient ID')['Date of Visit'].transform(
-            lambda x: (x - x.min()).dt.days)
-        
-        # Rearrange columns to position 'Days Since First Visit' after 'Medication Condition'
-        cols = list(summary_df.columns)
-        if 'Days Since First Visit' in cols:
-            cols.remove('Days Since First Visit')
-        try:
-            insert_at = cols.index('Medication Condition') + 1
-        except ValueError:
-            insert_at = len(cols)
-        cols.insert(insert_at, 'Days Since First Visit')
-        summary_df = summary_df[cols]
-        
-        # Convert 'Date of Visit' back to string format for saving
-        summary_df['Date of Visit'] = summary_df['Date of Visit'].dt.strftime('%d.%m.%Y')
-        
-        # Save the kinematic summary DataFrame to a CSV file
-        summary_file_path = os.path.join(folder_path, 'summary.csv')
-        try:
-            summary_df.to_csv(summary_file_path, index=False)
-            print(f"Kinematic summary CSV file created at: {summary_file_path}")
-        except Exception as e:
-            print(f"Failed to save kinematic summary CSV at {summary_file_path}: {e}")
-    else:
-        print("The 'Date of Visit' column is missing from the summary DataFrame. Unable to proceed with sorting and saving the summary.")
-    
-    return summary_df
+    return pd.DataFrame(summary_list)
 
 def load_dat_scan(input_folder):
     """
@@ -222,20 +179,29 @@ def merge_dat_scan(kinematic_df, dat_scan_df):
     # Ensure 'Patient ID' in kinematic_df is also standardized as string
     kinematic_df['Patient ID'] = kinematic_df['Patient ID'].astype(str)
     
-    # Merge on 'Patient ID'
+    # Merge on common key(s). Here we merge on Patient ID. If you wish to be more granular (e.g. by Date of Visit),
+    # you can include that in the keys.
     merged_df = pd.merge(kinematic_df, dat_scan_df, on="Patient ID", how="left")
     
-    # Define which imaging columns are side-specific.
+    # Define which imaging keys are side-specific.
     imaging_keys = ['Striatum', 'Putamen', 'Caudate']
     
     def select_contralateral(row):
-        hand = row.get('Hand Condition', '').strip().lower()
+        # Determine hand condition. If both tasks are available, prefer the Fingertapping one.
+        hand = None
+        if f"ft_Hand Condition" in row and pd.notna(row[f"ft_Hand Condition"]):
+            hand = row[f"ft_Hand Condition"]
+        elif f"hm_Hand Condition" in row and pd.notna(row[f"hm_Hand Condition"]):
+            hand = row[f"hm_Hand Condition"]
+        else:
+            hand = row.get('Hand Condition', '')
+        
+        hand = str(hand).strip().lower()
         if hand == 'left':
             side = 'Right'
         elif hand == 'right':
             side = 'Left'
         else:
-            # If hand condition is unknown, leave imaging data as missing.
             return row
         
         # For each imaging key and for each relevant software version, keep only the contralateral side data.
@@ -256,9 +222,61 @@ def merge_dat_scan(kinematic_df, dat_scan_df):
     return merged_df
 
 if __name__ == '__main__':
-    # Process kinematic files to generate a summary DataFrame.
-    kinematic_summary_df = process_input_folder(input_folder_path)
-
+    # Define paths for the two kinematic subfolders
+    fingertapping_path = os.path.join(input_folder_path, 'Fingertapping')
+    hand_movements_path = os.path.join(input_folder_path, 'Hand_Movements')
+    
+    # Process each subfolder with its respective prefix.
+    # The common keys (Patient ID, Date of Visit, Medication Condition) remain unprefixed.
+    ft_df = process_kinematic_subfolder(fingertapping_path, "ft")
+    hm_df = process_kinematic_subfolder(hand_movements_path, "hm")
+    
+    # Merge the two kinematic DataFrames on common keys so that findings for the same patient/visit are in one row.
+    # Here we merge on "Patient ID", "Date of Visit", and "Medication Condition".
+    kinematic_summary_df = pd.merge(ft_df, hm_df, on=["Patient ID", "Date of Visit", "Medication Condition"], how="outer")
+    
+    # Standardize Patient ID: convert to int then to string (e.g., "078" becomes "78")
+    def convert_pid(pid):
+        try:
+            return str(int(pid))
+        except Exception as e:
+            return pid
+    if 'Patient ID' in kinematic_summary_df.columns:
+        kinematic_summary_df['Patient ID'] = kinematic_summary_df['Patient ID'].apply(convert_pid)
+    
+    # Debug: print kinematic Patient IDs
+    print("Kinematic Patient IDs:", kinematic_summary_df['Patient ID'].unique())
+    
+    # Convert 'Date of Visit' to datetime for sorting and calculation
+    kinematic_summary_df['Date of Visit'] = pd.to_datetime(kinematic_summary_df['Date of Visit'], format='%d.%m.%Y')
+    kinematic_summary_df.drop_duplicates(inplace=True)
+    
+    # Calculate 'Days Since First Visit' for each patient
+    kinematic_summary_df['Days Since First Visit'] = kinematic_summary_df.groupby('Patient ID')['Date of Visit'].transform(
+        lambda x: (x - x.min()).dt.days)
+    
+    # Rearrange columns to position 'Days Since First Visit' after 'Medication Condition'
+    cols = list(kinematic_summary_df.columns)
+    if 'Days Since First Visit' in cols:
+        cols.remove('Days Since First Visit')
+    try:
+        insert_at = cols.index('Medication Condition') + 1
+    except ValueError:
+        insert_at = len(cols)
+    cols.insert(insert_at, 'Days Since First Visit')
+    kinematic_summary_df = kinematic_summary_df[cols]
+    
+    # Convert 'Date of Visit' back to string format for saving
+    kinematic_summary_df['Date of Visit'] = kinematic_summary_df['Date of Visit'].dt.strftime('%d.%m.%Y')
+    
+    # Save the kinematic summary DataFrame to a CSV file
+    summary_file_path = os.path.join(input_folder_path, 'summary.csv')
+    try:
+        kinematic_summary_df.to_csv(summary_file_path, index=False)
+        print(f"Kinematic summary CSV file created at: {summary_file_path}")
+    except Exception as e:
+        print(f"Failed to save kinematic summary CSV at {summary_file_path}: {e}")
+    
     # Load DatScan data.
     try:
         dat_scan_df = load_dat_scan(input_folder_path)
