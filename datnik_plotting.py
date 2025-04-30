@@ -531,5 +531,125 @@ def plot_bivariate_vs_ridge_scatter(
         print(f"  ERROR saving Bivariate vs Ridge plot {plot_path}: {type(e_save).__name__} - {e_save}")
     finally:
         plt.close(fig)
+        
+        
+        # --- START OF ADDITION to datnik_plotting.py ---
+
+# Add this import if you don't have it already
+import matplotlib.patches as mpatches
+
+def plot_elasticnet_coefficients_with_significance(
+    enet_results_task: dict,
+    pls_significant_features: list, # List of features significant in PLS
+    top_n: int = 20, # Plot top N non-zero features by absolute coefficient
+    output_folder: str = "Output/Plots",
+    file_name_base: str = "elasticnet_coefficients_sig"
+):
+    """
+    Generates a horizontal bar plot for non-zero ElasticNet coefficients,
+    highlighting features also found significant via PLS BSRs.
+
+    Args:
+        enet_results_task (dict): The dictionary from run_elasticnet_analysis for one task.
+        pls_significant_features (list): A list of full kinematic variable names
+                                         (e.g., 'hm_stdamplitude') that were significant
+                                         based on PLS BSR threshold for this task.
+        top_n (int): Max number of non-zero features to display based on absolute coefficient value.
+        output_folder (str): Folder path to save the plot.
+        file_name_base (str): Base name for the output PNG file.
+    """
+    task = enet_results_task.get('task', 'unknown_task')
+    coeffs_series = enet_results_task.get('coefficients')
+    optimal_alpha = enet_results_task.get('optimal_alpha', np.nan)
+    optimal_l1_ratio = enet_results_task.get('optimal_l1_ratio', np.nan)
+    r2_full = enet_results_task.get('r2_full_data', np.nan)
+    n_samples = enet_results_task.get('n_samples_enet', 'N/A')
+    n_selected = enet_results_task.get('n_selected_features', 'N/A')
+    imaging_var = enet_results_task.get('imaging_variable', 'Target')
+
+    if coeffs_series is None or not isinstance(coeffs_series, pd.Series) or coeffs_series.empty:
+        print(f"  Skipping ElasticNet plot for task {task}: No coefficient data found.")
+        return
+
+    # Filter for non-zero coefficients
+    non_zero_coeffs = coeffs_series[coeffs_series.abs() > 1e-9].copy() # Use tolerance for float comparison
+    if non_zero_coeffs.empty:
+        print(f"  Skipping ElasticNet plot for task {task}: No non-zero coefficients found.")
+        return
+
+    # Sort by absolute coefficient value and select top N
+    coeffs_sorted = non_zero_coeffs.reindex(non_zero_coeffs.abs().sort_values(ascending=False).index)
+    plot_data = coeffs_sorted.head(top_n).iloc[::-1] # Select top N and reverse for plotting
+
+    if plot_data.empty:
+         print(f"  Skipping ElasticNet plot for task {task}: No coefficients left after filtering/sorting.")
+         return
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(11, max(5, len(plot_data) * 0.35))) # Adjust height
+
+    # --- Color and Style Logic ---
+    colors = []
+    edge_colors = []
+    hatches = []
+    feature_labels = plot_data.index.tolist()
+
+    # Base colors for positive/negative
+    color_pos = '#1f77b4' # Blue
+    color_neg = '#d62728' # Red
+    # Style for PLS significant features
+    pls_sig_edgecolor = 'black'
+    pls_sig_hatch = '' # No hatch for PLS significant
+    # Style for PLS non-significant features
+    pls_nonsig_edgecolor = 'grey'
+    pls_nonsig_hatch = '///' # Add diagonal hatching
+
+    for feature, coeff in plot_data.items():
+        is_pls_significant = feature in pls_significant_features
+        base_color = color_pos if coeff >= 0 else color_neg
+
+        colors.append(base_color)
+        edge_colors.append(pls_sig_edgecolor if is_pls_significant else pls_nonsig_edgecolor)
+        hatches.append(pls_sig_hatch if is_pls_significant else pls_nonsig_hatch)
+    # --- End Color and Style Logic ---
+
+    bars = ax.barh(
+        feature_labels,
+        plot_data.values,
+        color=colors,
+        edgecolor=edge_colors, # Apply edge colors
+        hatch=hatches,         # Apply hatching
+        linewidth=1.0,         # Slightly thicker edge for visibility
+        alpha=0.85
+    )
+
+    ax.set_xlabel("ElasticNet Coefficient Value", fontsize=12)
+    ax.set_ylabel("Kinematic Feature", fontsize=12)
+    title = (f"ElasticNet Coefficients predicting {imaging_var} - Task {task.upper()} (OFF Data)\n"
+             f"Top {len(plot_data)} Non-Zero Feats (Alpha={optimal_alpha:.3f}, L1 Ratio={optimal_l1_ratio:.2f}, R²={r2_full:.3f}, N={n_samples}, Selected={n_selected})")
+    ax.set_title(title, fontsize=14, weight='bold')
+    ax.axvline(0, color='black', linewidth=0.8, linestyle='--')
+    ax.grid(axis='x', linestyle='--', alpha=0.6)
+    ax.tick_params(axis='y', labelsize=10)
+    sns.despine(ax=ax, left=True, bottom=False)
+
+    # --- Add Legend for Significance ---
+    solid_patch = mpatches.Patch(facecolor='grey', edgecolor='black', label='PLS BSR Significant')
+    hatched_patch = mpatches.Patch(facecolor='grey', edgecolor='grey', hatch='///', label='PLS BSR Non-Significant')
+    ax.legend(handles=[solid_patch, hatched_patch], title="Feature Reliability (PLS BSR)", fontsize=9, title_fontsize=10, loc='lower right')
+    # --- End Legend ---
+
+    plt.tight_layout()
+    plot_filename = f"{file_name_base}_{task}_OFF.png"
+    plot_path = os.path.join(output_folder, plot_filename)
+    try:
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"  ElasticNet coefficients plot with significance saved to {plot_path}")
+    except Exception as e_save:
+        print(f"  ERROR saving ElasticNet coefficients plot {plot_path}: {type(e_save).__name__} - {e_save}")
+    finally:
+        plt.close(fig)
+
+# --- END OF ADDITION to datnik_plotting.py ---
 
 # --- End of updated function ---

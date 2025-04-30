@@ -544,3 +544,124 @@ def run_pcr_analysis(
 # <<< --- END OF NEW PCR FUNCTION --- >>>
 
 # --- END OF UPDATED FILE datnik_analysis.py ---
+
+# --- START OF ADDITION to datnik_analysis.py ---
+
+from sklearn.linear_model import ElasticNetCV # Add this import at the top
+
+# <<< --- ADD NEW ELASTICNET FUNCTION --- >>>
+def run_elasticnet_analysis(
+    df: pd.DataFrame,
+    base_kinematic_cols: list,
+    task_prefix: str,
+    imaging_col: str,
+    l1_ratios = np.linspace(0.1, 1.0, 10), # Mixes between L1 and L2
+    cv_folds: int = 5, # Folds for internal CV in ElasticNetCV
+    max_iter: int = 10000, # Increase iterations for convergence
+    random_state: int = 42 # For reproducibility
+) -> dict:
+    """
+    Performs ElasticNet Regression analysis between kinematic variables (X)
+    and an imaging variable (Y), using cross-validation to find alpha and l1_ratio.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing OFF-state kinematic and imaging data.
+        base_kinematic_cols (list): Base names of kinematic variables.
+        task_prefix (str): Prefix for the task (e.g., 'ft', 'hm').
+        imaging_col (str): Column name for the single imaging variable (Y).
+        l1_ratios (list or array): List of l1_ratio values for ElasticNetCV to test.
+        cv_folds (int): Number of cross-validation folds for ElasticNetCV.
+        max_iter (int): Maximum iterations for the solver.
+        random_state (int): Random seed for reproducibility.
+
+    Returns:
+        dict: A dictionary containing ElasticNet Regression results, or None if analysis fails.
+              Includes optimal alpha, l1_ratio, coefficients, R-squared.
+    """
+    print(f"\n--- Running ElasticNetCV Analysis for Task: {task_prefix} vs {imaging_col} ---")
+
+    # --- 1. Prepare Data (Same as Ridge/PLS) ---
+    kinematic_cols = [f"{task_prefix}_{base}" for base in base_kinematic_cols]
+    valid_kinematic_cols = [col for col in kinematic_cols if col in df.columns]
+
+    if not valid_kinematic_cols or imaging_col not in df.columns:
+        print("Warning: Missing kinematic or imaging columns for ElasticNet. Skipping.")
+        return None
+
+    enet_data = df[valid_kinematic_cols + [imaging_col]].copy()
+    for col in enet_data.columns:
+        enet_data[col] = pd.to_numeric(enet_data[col].astype(str).str.replace(',', '.'), errors='coerce')
+
+    enet_data.dropna(inplace=True)
+    n_samples_enet = len(enet_data)
+    n_features = len(valid_kinematic_cols)
+
+    if n_samples_enet < n_features or n_samples_enet < cv_folds or n_samples_enet < 10:
+         print(f"Warning: Insufficient samples (N={n_samples_enet}) relative to features ({n_features}) or CV folds ({cv_folds}) for ElasticNetCV. Skipping.")
+         return None
+
+    X = enet_data[valid_kinematic_cols].values
+    y = enet_data[imaging_col].values
+
+    # Scale X data
+    scaler_X = StandardScaler()
+    X_scaled = scaler_X.fit_transform(X)
+    # Y target remains unscaled
+
+    # --- 2. Fit ElasticNetCV Model ---
+    try:
+        print(f"Fitting ElasticNetCV (folds={cv_folds}, testing {len(l1_ratios)} l1_ratios)...")
+        # Use ElasticNetCV to find best alpha and l1_ratio
+        enet_cv = ElasticNetCV(
+            l1_ratio=l1_ratios,
+            cv=cv_folds,
+            random_state=random_state,
+            max_iter=max_iter,
+            n_jobs=-1 # Use all available CPU cores
+        )
+        enet_cv.fit(X_scaled, y)
+
+        optimal_alpha = enet_cv.alpha_
+        optimal_l1_ratio = enet_cv.l1_ratio_
+        coefficients = enet_cv.coef_
+        intercept = enet_cv.intercept_
+
+        # Calculate R^2 on the full dataset using the best model found by CV
+        y_pred = enet_cv.predict(X_scaled)
+        r2_full = r2_score(y, y_pred)
+        rmse_full = np.sqrt(mean_squared_error(y, y_pred))
+
+        print(f"ElasticNetCV completed.")
+        print(f"  Optimal alpha: {optimal_alpha:.6f}")
+        print(f"  Optimal l1_ratio: {optimal_l1_ratio:.2f}")
+        print(f"  Model fit (on full data used for CV): R^2 = {r2_full:.4f}, RMSE = {rmse_full:.4f}")
+        print(f"  Number of features selected (non-zero coefficients): {np.sum(coefficients != 0)} / {n_features}")
+
+
+        # Store coefficients in a Series
+        coeffs_series = pd.Series(coefficients, index=valid_kinematic_cols)
+
+    except Exception as e:
+        print(f"Error during ElasticNetCV fitting: {e}")
+        return None
+
+    # --- 3. Prepare Output ---
+    final_results = {
+        'task': task_prefix,
+        'n_samples_enet': n_samples_enet,
+        'kinematic_variables': valid_kinematic_cols,
+        'imaging_variable': imaging_col,
+        'optimal_alpha': optimal_alpha,
+        'optimal_l1_ratio': optimal_l1_ratio,
+        'coefficients': coeffs_series,
+        'intercept': intercept,
+        'r2_full_data': r2_full,
+        'rmse_full_data': rmse_full,
+        'n_selected_features': int(np.sum(coefficients != 0))
+    }
+
+    print(f"--- ElasticNet Analysis Finished for Task {task_prefix} ---")
+    return final_results
+
+# --- END OF ADDITION to datnik_analysis.py ---
+
