@@ -1,60 +1,75 @@
+# --- START OF CLEANED datnik_main.py (OFF Data, Bivariate + Ridge) ---
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Performs bivariate correlation analysis (Strategy 1) and PLS analysis
-(potentially multiple significant LVs) between kinematic variables
-(FT & HM tasks) and contralateral Striatum Z-scores.
-Generates plots for both types of analysis.
+Performs Bivariate Correlation and Ridge Regression analyses between
+OFF-state kinematics (FT & HM tasks) and contralateral Striatum Z-scores.
+
+Generates plots for Bivariate analysis and Ridge Regression coefficients.
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
-from scipy.stats import pearsonr # Keep for potential direct use or inspection
+from scipy.stats import pearsonr
 
-# --- Import the analysis functions ---
-from datnik_analysis import run_correlation_analysis, run_pls_analysis
-# --- Import the plotting functions ---
+# --- Import the analysis and plotting functions ---
 try:
-    from datnik_plotting import plot_task_comparison_scatter, plot_pls_results
+    # Only import needed functions
+    from datnik_analysis import run_correlation_analysis, run_ridge_analysis
+    from datnik_plotting import plot_task_comparison_scatter, plot_ridge_coefficients, plot_bivariate_vs_ridge_scatter # Added Ridge plot func
     PLOT_AVAILABLE = True
-except ImportError:
-    print("Warning: Required plotting functions not found in datnik_plotting.py.")
-    print("Please ensure datnik_plotting.py exists and contains plot_task_comparison_scatter and plot_pls_results.")
+except ImportError as e:
+    print(f"Warning: Error importing analysis/plotting functions: {e}")
     PLOT_AVAILABLE = False
+
 
 # -------------------------
 # 1. Load and Process Data
 # -------------------------
 script_dir = os.path.dirname(os.path.abspath(__file__))
-merged_csv_file = os.path.join(script_dir, "Input", "merged_summary.csv")
+script_parent_dir = os.path.dirname(script_dir)
+input_dir = os.path.join(script_parent_dir, "Input")
+merged_csv_file = os.path.join(input_dir, "merged_summary_with_medon.csv") # Ensure correct name
+
 print(f"Loading data from: {merged_csv_file}")
-try:
-    # Attempt to read with semicolon first, then comma
+try: # Load data... (Keep the loading logic as it was)
     try:
-        df = pd.read_csv(merged_csv_file, sep=';', decimal='.')
-        print("Read merged_summary.csv with ';' separator.")
-    except pd.errors.ParserError:
-        print("Warning: Failed to parse with ';'. Trying ',' separator...")
-        df = pd.read_csv(merged_csv_file, sep=',', decimal='.')
-        print("Read merged_summary.csv with ',' separator.")
-    except Exception as read_err: # Catch other potential read errors
+        df_full = pd.read_csv(merged_csv_file, sep=';', decimal='.')
+        print("Read merged_summary CSV with ';' separator.")
+    except (FileNotFoundError, pd.errors.ParserError, UnicodeDecodeError):
+        print(f"Warning: Failed to parse/find '{os.path.basename(merged_csv_file)}' with ';'. Trying ',' separator...")
+        df_full = pd.read_csv(merged_csv_file, sep=',', decimal='.')
+        print("Read merged_summary CSV with ',' separator.")
+    except Exception as read_err:
         print(f"Error reading {merged_csv_file}: {read_err}")
-        exit()
-
-    print(f"Data loaded successfully. Shape: {df.shape}")
-    # Basic check for expected columns
-    if 'Patient ID' not in df.columns: print("Warning: 'Patient ID' column missing.")
-    if 'Contralateral_Striatum_Z' not in df.columns: print("Warning: Target imaging column 'Contralateral_Striatum_Z' missing.")
-
+        sys.exit(1)
+    print(f"Original data loaded successfully. Shape: {df_full.shape}")
+    if 'Medication Condition' not in df_full.columns:
+         print("CRITICAL ERROR: 'Medication Condition' column is missing.")
+         sys.exit(1)
 except FileNotFoundError:
     print(f"Error: Input file not found at {merged_csv_file}")
-    exit()
+    sys.exit(1)
 except Exception as e:
     print(f"Error loading data from {merged_csv_file}: {e}")
-    exit()
+    sys.exit(1)
 
-# Base kinematic variable names
+# Filter for OFF medication state
+print("\nFiltering data for Medication Condition == 'off'...")
+df_full['Medication Condition'] = df_full['Medication Condition'].astype(str).str.strip().str.lower()
+df = df_full[df_full['Medication Condition'] == 'off'].copy()
+
+if df.empty:
+    print("Error: No data remaining after filtering for 'OFF' medication state. Exiting.")
+    sys.exit(0)
+else:
+     print(f"Data filtered for 'OFF' state. New shape: {df.shape}")
+     print(f"Patients in OFF state data: {df['Patient ID'].nunique()}")
+
+# --- Setup ---
 base_kinematic_cols = [
     "meanamplitude", "stdamplitude", "meanspeed", "stdspeed", "meanrmsvelocity",
     "stdrmsvelocity", "meanopeningspeed", "stdopeningspeed", "meanclosingspeed",
@@ -62,14 +77,9 @@ base_kinematic_cols = [
     "rate", "amplitudedecay", "velocitydecay", "ratedecay", "cvamplitude",
     "cvcycleduration", "cvspeed", "cvrmsvelocity", "cvopeningspeed", "cvclosingspeed"
 ]
-
 TARGET_IMAGING_BASE = "Contralateral_Striatum"
 TARGET_IMAGING_COL = f"{TARGET_IMAGING_BASE}_Z"
 tasks = ['ft', 'hm']
-
-# Output Folders
-# Assume script is in a 'Code' or similar folder, place 'Output' parallel to it
-script_parent_dir = os.path.dirname(script_dir)
 output_base_folder = os.path.join(script_parent_dir, "Output")
 data_output_folder = os.path.join(output_base_folder, "Data")
 plots_folder = os.path.join(output_base_folder, "Plots")
@@ -79,317 +89,297 @@ print(f"Output folders created/checked at: {output_base_folder}")
 
 # Parameters
 SIGNIFICANCE_ALPHA = 0.05
-N_PERMUTATIONS = 100000
-N_BOOTSTRAPS = 50000
-MAX_PLS_COMPONENTS = 5 # Max components to test in PLS
+# RidgeCV parameters
+RIDGE_ALPHAS = (0.01, 0.1, 1.0, 10.0, 100.0, 500.0, 1000.0) # Example alphas
+RIDGE_CV_FOLDS = 5
+PLOT_TOP_N_RIDGE = 20 # How many coefficients to show in Ridge plot
 
 # --- Data Storage ---
 all_significant_bivariate_results = []
 all_raw_bivariate_results_list = []
-all_pls_results_dict = {}
-# List to store DataFrames for the *combined* PLS results file
-all_significant_pls_summary_for_combined_file = []
+all_ridge_results_dict = {}
 
 # ---------------------------------------------
-# 2. Bivariate Correlation Analysis (Strategy 1)
+# 2. Bivariate Correlation Analysis (OFF Data)
 # ---------------------------------------------
-print("\n=== Starting Bivariate Correlation Analysis ===")
-# Check if target imaging column exists before proceeding
+print("\n=== Starting Bivariate Correlation Analysis (OFF Data Only) ===")
 if TARGET_IMAGING_COL not in df.columns:
-    print(f"Error: Target imaging column '{TARGET_IMAGING_COL}' not found in DataFrame. Skipping bivariate analysis.")
+    print(f"Error: Target imaging column '{TARGET_IMAGING_COL}' not found in OFF-state DataFrame. Skipping bivariate analysis.")
 else:
     for task in tasks:
         task_kinematic_cols = [f"{task}_{base}" for base in base_kinematic_cols]
         valid_task_cols = [col for col in task_kinematic_cols if col in df.columns]
         print(f"\n--- Task: {task.upper()} ---")
-        print(f"Found {len(valid_task_cols)} kinematic columns for task {task} in the DataFrame.")
         if not valid_task_cols:
-            print(f"Skipping task {task} for bivariate analysis - no valid kinematic columns found.")
+            print(f"Skipping task {task}: No valid columns found in OFF-state data.")
             continue
 
-        # Run analysis to get FDR-corrected significant results
+        # Run analysis using the filtered df - this function returns df with 'Kinematic Variable' column
         significant_results_task_df = run_correlation_analysis(
             df=df, base_kinematic_cols=base_kinematic_cols, task_prefix=task,
             imaging_base_name=TARGET_IMAGING_BASE, alpha=SIGNIFICANCE_ALPHA
         )
 
-        # Calculate all raw correlations for this task (needed for plotting later)
-        print(f"Calculating all raw correlations for task {task} for plotting lookup...")
+        # Calculate all raw correlations using the filtered df
+        print(f"Calculating all raw correlations for task {task} (OFF Data)...")
         for base_col in base_kinematic_cols:
-            kinematic_col = f"{task}_{base_col}"
+            kinematic_col = f"{task}_{base_col}" # Full name is here
             if kinematic_col not in df.columns: continue
             data_pair = df[[kinematic_col, TARGET_IMAGING_COL]].copy()
             try:
                  # Convert to numeric, coercing errors
                  data_pair[kinematic_col] = pd.to_numeric(data_pair[kinematic_col].astype(str).str.replace(',', '.'), errors='coerce')
                  data_pair[TARGET_IMAGING_COL] = pd.to_numeric(data_pair[TARGET_IMAGING_COL].astype(str).str.replace(',', '.'), errors='coerce')
-            except Exception as e:
-                 print(f"Warning: Error converting columns for {kinematic_col} / {TARGET_IMAGING_COL} to numeric: {e}")
-                 continue
-            data_pair.dropna(inplace=True)
-            n_samples = len(data_pair)
-            if n_samples >= 3: # Need at least 3 samples for correlation
-                try:
-                    corr_coef, p_value = pearsonr(data_pair[kinematic_col], data_pair[TARGET_IMAGING_COL])
-                    if pd.notna(corr_coef) and pd.notna(p_value):
+                 data_pair.dropna(inplace=True)
+                 n_samples = len(data_pair)
+                 if n_samples >= 3:
+                     corr_coef, p_value = pearsonr(data_pair[kinematic_col], data_pair[TARGET_IMAGING_COL])
+                     if pd.notna(corr_coef) and pd.notna(p_value):
+                         # <<< --- STORING FULL KINEMATIC NAME --- >>>
                          all_raw_bivariate_results_list.append({
-                            "Task": task, "Base Kinematic": base_col,
-                            "Pearson Correlation (r)": corr_coef,
-                            "P-value (uncorrected)": p_value, "N": n_samples
+                             "Task": task,
+                             # "Base Kinematic": base_col, # Optional: Keep if you need the base name elsewhere
+                             "Kinematic Variable": kinematic_col, # STORE THE FULL NAME HERE
+                             "Pearson Correlation (r)": corr_coef,
+                             "P-value (uncorrected)": p_value,
+                             "N": n_samples
                          })
-                except ValueError: # Handle cases where correlation cannot be computed
-                    continue
+                         # <<< --- END CHANGE --- >>>
+            except Exception: # Catch potential errors during calculation
+                # print(f"  Warn: Could not calculate correlation for {kinematic_col}") # Optional verbose warning
+                continue
 
-        # Save significant results for the task
+        # Save significant results for the task (already contains 'Kinematic Variable')
         if not significant_results_task_df.empty:
-            output_file = os.path.join(data_output_folder, f"significant_correlations_{TARGET_IMAGING_COL}_{task}.csv")
+            output_file = os.path.join(data_output_folder, f"significant_correlations_{TARGET_IMAGING_COL}_{task}_OFF.csv")
             try:
                 significant_results_task_df.to_csv(output_file, index=False, sep=';', decimal='.')
                 print(f"Significant bivariate results for task {task} saved to {output_file}")
                 all_significant_bivariate_results.append(significant_results_task_df)
             except Exception as e:
-                print(f"Error saving significant bivariate results for task {task}: {e}")
+                print(f"Error saving significant bivariate results for {task}: {e}")
         else:
             print(f"No significant bivariate correlations found for task {task}.")
 
 # Process combined bivariate results
-all_raw_bivariate_results_df = pd.DataFrame(all_raw_bivariate_results_list)
-
+all_raw_bivariate_results_df = pd.DataFrame(all_raw_bivariate_results_list) # Contains 'Kinematic Variable'
 if all_significant_bivariate_results:
-    combined_significant_bivariate_df = pd.concat(all_significant_bivariate_results, ignore_index=True)
-    # Identify variables significant in both tasks
-    significance_counts = combined_significant_bivariate_df.groupby('Base Kinematic')['Task'].nunique()
-    significant_in_both_tasks = significance_counts[significance_counts == 2].index.tolist()
-    output_file_combined = os.path.join(data_output_folder, f"significant_correlations_{TARGET_IMAGING_COL}_combined.csv")
+    combined_significant_bivariate_df = pd.concat(all_significant_bivariate_results, ignore_index=True) # Also contains 'Kinematic Variable'
+
+    # --- Determine significance in both tasks ---
+    # We need to extract the base name again if we want to group by it
+    # Define a helper function or use apply
+    def get_base_name(feature_name):
+        parts = feature_name.split('_', 1)
+        return parts[1] if len(parts) > 1 else feature_name
+
+    if not combined_significant_bivariate_df.empty and 'Kinematic Variable' in combined_significant_bivariate_df.columns:
+        combined_significant_bivariate_df['Base Kinematic'] = combined_significant_bivariate_df['Kinematic Variable'].apply(get_base_name)
+        significance_counts = combined_significant_bivariate_df.groupby('Base Kinematic')['Task'].nunique()
+        significant_in_both_tasks = significance_counts[significance_counts == 2].index.tolist()
+    else:
+        significant_in_both_tasks = [] # Handle case where df is empty or column missing
+
+    # Save combined results
+    output_file_combined = os.path.join(data_output_folder, f"significant_correlations_{TARGET_IMAGING_COL}_combined_OFF.csv")
     try:
-        combined_significant_bivariate_df.sort_values(by=['Base Kinematic', 'Task'], inplace=True)
+        # Sort by base name then task for readability
+        if 'Base Kinematic' in combined_significant_bivariate_df.columns:
+            combined_significant_bivariate_df.sort_values(by=['Base Kinematic', 'Task'], inplace=True)
         combined_significant_bivariate_df.to_csv(output_file_combined, index=False, sep=';', decimal='.')
-        print(f"\nCombined significant bivariate results saved to {output_file_combined}")
-        print(f"Base kinematic variables significant (bivariate, q<={SIGNIFICANCE_ALPHA}) in BOTH tasks: {significant_in_both_tasks}")
+        print(f"\nCombined significant bivariate results (OFF Data) saved to {output_file_combined}")
+        print(f"Base kinematic variables significant (bivariate) in BOTH tasks (OFF Data): {significant_in_both_tasks}")
     except Exception as e:
-         print(f"Error saving combined significant bivariate results: {e}")
+        print(f"Error saving combined bivariate results: {e}")
 else:
+    # Ensure these variables exist even if no significant results were found
     combined_significant_bivariate_df = pd.DataFrame()
     significant_in_both_tasks = []
-    print("\nNo significant bivariate correlations found in any task.")
-print("=== Bivariate Correlation Analysis Finished ===")
+    print("\nNo significant bivariate correlations found in any task (OFF Data).")
+print("=== Bivariate Correlation Analysis Finished (OFF Data Only) ===")
 
-
+# --- End of Updated Section 2 ---
 # ---------------------------------------------
-# 3. PLS Correlation Analysis
+# 3. Ridge Regression Analysis (OFF Data)
 # ---------------------------------------------
-print("\n=== Starting PLS Correlation Analysis ===")
+print("\n=== Starting Ridge Regression Analysis (OFF Data Only) ===")
 if TARGET_IMAGING_COL not in df.columns:
-     print(f"Error: Target imaging column '{TARGET_IMAGING_COL}' not found. Skipping PLS analysis.")
+     print(f"Error: Target imaging column '{TARGET_IMAGING_COL}' not found. Skipping Ridge analysis.")
 else:
-    # List to store summary dataframes for the *combined* saving later
-    all_significant_pls_summary_for_combined_file = []
     for task in tasks:
-        print(f"\n--- Running PLS for Task: {task.upper()} ---")
-        pls_results_task = run_pls_analysis(
+        print(f"\n--- Running Ridge Regression for Task: {task.upper()} (OFF Data Only) ---")
+        ridge_results_task = run_ridge_analysis(
             df=df,
             base_kinematic_cols=base_kinematic_cols,
             task_prefix=task,
             imaging_col=TARGET_IMAGING_COL,
-            max_components=MAX_PLS_COMPONENTS,
-            n_permutations=N_PERMUTATIONS,
-            n_bootstraps=N_BOOTSTRAPS,
-            alpha=SIGNIFICANCE_ALPHA
+            alphas=RIDGE_ALPHAS,
+            cv_folds=RIDGE_CV_FOLDS
         )
 
-        if pls_results_task:
-            all_pls_results_dict[task] = pls_results_task # Store full results for plotting
+        if ridge_results_task:
+            all_ridge_results_dict[task] = ridge_results_task # Store results
+            # Save Ridge coefficients
+            ridge_filename_base = os.path.join(data_output_folder, f"ridge_{task}_OFF")
+            try:
+                 coeffs_series = ridge_results_task.get('coefficients')
+                 if coeffs_series is not None and isinstance(coeffs_series, pd.Series):
+                      coeffs_df = coeffs_series.reset_index()
+                      coeffs_df.columns = ['Feature', 'Coefficient']
+                      coeffs_df['Optimal_Alpha'] = ridge_results_task.get('optimal_alpha')
+                      coeffs_df['R2_Full_Data'] = ridge_results_task.get('r2_full_data')
+                      coeffs_df.sort_values(by='Coefficient', key=abs, ascending=False, inplace=True)
+                      coeffs_df.to_csv(f"{ridge_filename_base}_coefficients.csv", sep=';', decimal='.', index=False)
+                      print(f"  Saved Ridge coefficients to {ridge_filename_base}_coefficients.csv")
+                 else: print("  No coefficients found in Ridge results to save.")
+            except Exception as e: print(f"  Error saving Ridge coefficients for task {task}: {e}")
+        else: print(f"Ridge Regression analysis failed or was skipped for task {task}.")
 
-            significant_lvs = pls_results_task.get('significant_lvs', [])
-            if significant_lvs:
-                print(f"Task {task.upper()}: Found {len(significant_lvs)} significant LVs: {significant_lvs}")
+print("=== Ridge Regression Analysis Finished (OFF Data Only) ===")
 
-                # Prepare summary data for this task's significant LVs file
-                task_pls_summary_list = []
-                for lv_index in significant_lvs:
-                    lv_data = pls_results_task['lv_results'].get(lv_index)
-                    if not lv_data: continue # Should not happen if lv_index is in significant_lvs
 
-                    lv_summary_base = {
-                        'Task': task, 'LV_Index': lv_index,
-                        'LV_Correlation': lv_data.get('correlation', np.nan),
-                        'LV_P_Value': lv_data.get('p_value', np.nan),
-                        'Y_Loading': lv_data.get('y_loadings', np.nan),
-                        'N_Samples': pls_results_task.get('n_samples_pls', np.nan)
-                    }
-                    x_loadings = lv_data.get('x_loadings')
-                    bsr = lv_data.get('bootstrap_ratios')
-
-                    if x_loadings is not None and isinstance(x_loadings, pd.Series):
-                         for k_var, loading in x_loadings.items():
-                             row = lv_summary_base.copy()
-                             row['Kinematic_Variable'] = k_var
-                             row['X_Loading'] = loading
-                             row['Bootstrap_Ratio'] = bsr.get(k_var, np.nan) if bsr is not None else np.nan
-                             task_pls_summary_list.append(row)
-                    else:
-                         # If no X loadings (shouldn't happen for valid LV), save base info
-                         task_pls_summary_list.append(lv_summary_base)
-
-                # --- Create, Sort, and Save Task-Specific File ---
-                if task_pls_summary_list:
-                     task_pls_summary_df = pd.DataFrame(task_pls_summary_list)
-
-                     # Sort the task-specific DataFrame
-                     print(f"Sorting PLS results for task {task} by P-value and BSR magnitude...")
-                     # Create temporary column for sorting by absolute BSR
-                     task_pls_summary_df['Absolute_BSR'] = task_pls_summary_df['Bootstrap_Ratio'].abs()
-                     # Sort: LV p-value ascending, then absolute BSR descending
-                     task_pls_summary_df.sort_values(
-                         by=['LV_P_Value', 'Absolute_BSR'],
-                         ascending=[True, False], # Sort p-value lowest first, BSR highest first
-                         inplace=True,
-                         na_position='last' # Keep NaNs at the bottom of BSR sort
-                     )
-                     # Remove the temporary column
-                     task_pls_summary_df.drop(columns=['Absolute_BSR'], inplace=True)
-
-                     # Save the sorted task-specific file
-                     task_filename = os.path.join(data_output_folder, f"pls_significant_results_{task}_sorted.csv")
-                     try:
-                         task_pls_summary_df.to_csv(task_filename, index=False, sep=';', decimal='.')
-                         print(f"Sorted PLS results for task {task} saved to {task_filename}")
-                     except Exception as e:
-                         print(f"Error saving sorted PLS results for task {task}: {e}")
-
-                     # Append the sorted DataFrame to the list for combined saving
-                     all_significant_pls_summary_for_combined_file.append(task_pls_summary_df)
-                 # -----------------------------------------------
-
-            else:
-                print(f"Task {task.upper()}: No significant LVs found (tested up to {pls_results_task.get('max_components_tested', 'N/A')} LVs).")
-        else:
-             print(f"PLS analysis failed or was skipped for task {task}.")
-
-    # --- Save COMBINED significant PLS results ---
-    if all_significant_pls_summary_for_combined_file:
-        # Concatenate the (already sorted by task) task DataFrames
-        combined_pls_summary_df = pd.concat(all_significant_pls_summary_for_combined_file, ignore_index=True)
-        # Optional: could re-sort the combined file if a cross-task sort order is desired
-        pls_filename_combined = os.path.join(data_output_folder, f"pls_significant_results_all_tasks_combined_sorted.csv")
-        try:
-            combined_pls_summary_df.to_csv(pls_filename_combined, index=False, sep=';', decimal='.')
-            print(f"\nCombined (and sorted by task/p-value/BSR) significant PLS results saved to {pls_filename_combined}")
-        except Exception as e:
-            print(f"Error saving combined significant PLS results: {e}")
-    else:
-        print("\nNo significant PLS LVs found across all tasks to save.")
-    # -----------------------------------------------
-
-print("=== PLS Correlation Analysis Finished ===")
-
+# --- Corrected Section 4 for datnik_main.py ---
 
 # ---------------------------------------------
-# 4. Plotting Bivariate Results (Task Comparison - BOTH TASKS Significant)
+# 4. Plotting (Bivariate, Ridge Coeffs, Comparison Scatter)
 # ---------------------------------------------
-print("\n=== Generating Bivariate Plots (Task Comparison - Significant in BOTH) ===")
-if PLOT_AVAILABLE and len(significant_in_both_tasks) > 0:
+print("\n=== Generating Plots (OFF Data Only) ===")
+
+# --- Plot 1: Bivariate Task Comparison (for vars significant in BOTH tasks) ---
+print("\n--- Generating Bivariate Task Comparison Plots ---")
+if PLOT_AVAILABLE and 'significant_in_both_tasks' in locals() and len(significant_in_both_tasks) > 0:
+    # Check if necessary dataframes are available
     if TARGET_IMAGING_COL not in df.columns:
-        print(f"Error: Target imaging column '{TARGET_IMAGING_COL}' not found. Cannot generate bivariate plots.")
+        print("Skipping Bivariate Task Comparison plots: Target imaging column missing.")
+    elif 'all_raw_bivariate_results_df' not in locals() or all_raw_bivariate_results_df.empty:
+        print("Skipping Bivariate Task Comparison plots: Raw bivariate results data missing or empty.")
     else:
-        if all_raw_bivariate_results_df.empty:
-             print("Warning: Raw bivariate results data frame is empty. Cannot retrieve stats for plotting.")
-        else:
-            print(f"Plotting comparisons for {len(significant_in_both_tasks)} variables significant in both tasks.")
-            for base_col in significant_in_both_tasks:
-                print(f"  Plotting: {base_col}")
-                ft_col = f"ft_{base_col}"
-                hm_col = f"hm_{base_col}"
-                # Double check columns exist in the original dataframe
-                if ft_col not in df.columns:
-                    print(f"    Skipping {base_col}: FT column '{ft_col}' not found in df.")
-                    continue
-                if hm_col not in df.columns:
-                    print(f"    Skipping {base_col}: HM column '{hm_col}' not found in df.")
-                    continue
+        print(f"Plotting Bivariate Task Comparisons for {len(significant_in_both_tasks)} variables significant in both tasks (OFF Data).")
+        for base_col in significant_in_both_tasks:
+            print(f"  Plotting Bivariate Comparison: {base_col}")
+            ft_col = f"ft_{base_col}"
+            hm_col = f"hm_{base_col}"
 
-                plot_data_raw = df[[ft_col, hm_col, TARGET_IMAGING_COL]].copy()
-                try:
-                    # Convert relevant columns to numeric for plotting
-                    plot_data_raw[ft_col] = pd.to_numeric(plot_data_raw[ft_col].astype(str).str.replace(',', '.'), errors='coerce')
-                    plot_data_raw[hm_col] = pd.to_numeric(plot_data_raw[hm_col].astype(str).str.replace(',', '.'), errors='coerce')
-                    plot_data_raw[TARGET_IMAGING_COL] = pd.to_numeric(plot_data_raw[TARGET_IMAGING_COL].astype(str).str.replace(',', '.'), errors='coerce')
-                except Exception as e:
-                     print(f"    Warning: Error converting data to numeric for {base_col}. Skipping plot. Error: {e}")
-                     continue
+            # Ensure columns exist in the filtered DataFrame 'df'
+            if ft_col not in df.columns or hm_col not in df.columns:
+                print(f"    Skipping {base_col}: Column missing in OFF-state df.")
+                continue
 
-                # Retrieve stats from the pre-calculated raw results dataframe
-                ft_stats_row = all_raw_bivariate_results_df[(all_raw_bivariate_results_df['Task'] == 'ft') & (all_raw_bivariate_results_df['Base Kinematic'] == base_col)]
-                hm_stats_row = all_raw_bivariate_results_df[(all_raw_bivariate_results_df['Task'] == 'hm') & (all_raw_bivariate_results_df['Base Kinematic'] == base_col)]
+            # Prepare data for this specific plot
+            plot_data_raw = df[[ft_col, hm_col, TARGET_IMAGING_COL]].copy()
+            try: # Ensure data is numeric for plotting
+                plot_data_raw[ft_col] = pd.to_numeric(plot_data_raw[ft_col].astype(str).str.replace(',', '.'), errors='coerce')
+                plot_data_raw[hm_col] = pd.to_numeric(plot_data_raw[hm_col].astype(str).str.replace(',', '.'), errors='coerce')
+                plot_data_raw[TARGET_IMAGING_COL] = pd.to_numeric(plot_data_raw[TARGET_IMAGING_COL].astype(str).str.replace(',', '.'), errors='coerce')
+                # Drop NaNs specific to this plot's data
+                plot_data_raw.dropna(subset=[ft_col, hm_col, TARGET_IMAGING_COL], how='any', inplace=True)
 
-                ft_stats_dict = {}
-                if not ft_stats_row.empty:
-                    ft_r = ft_stats_row.iloc[0].get('Pearson Correlation (r)', np.nan)
-                    ft_p = ft_stats_row.iloc[0].get('P-value (uncorrected)', np.nan)
-                    ft_n = ft_stats_row.iloc[0].get('N', 0)
-                    ft_stats_dict = {'r': ft_r, 'p': ft_p, 'r2': ft_r**2 if pd.notna(ft_r) else np.nan, 'N': ft_n}
+            except Exception as e:
+                 print(f"    Warning: Error converting plot data to numeric for {base_col}. Skipping. Error: {e}")
+                 continue
 
-                hm_stats_dict = {}
-                if not hm_stats_row.empty:
-                    hm_r = hm_stats_row.iloc[0].get('Pearson Correlation (r)', np.nan)
-                    hm_p = hm_stats_row.iloc[0].get('P-value (uncorrected)', np.nan)
-                    hm_n = hm_stats_row.iloc[0].get('N', 0)
-                    hm_stats_dict = {'r': hm_r, 'p': hm_p, 'r2': hm_r**2 if pd.notna(hm_r) else np.nan, 'N': hm_n}
+            if plot_data_raw.empty:
+                 print(f"    Skipping {base_col}: No valid data points after NaN removal for plotting.")
+                 continue
 
-                # Generate plot filename
-                file_name = f"task_comparison_BOTH_SIG_{base_col}_vs_{TARGET_IMAGING_BASE}.png"
-                plot_task_comparison_scatter(
-                    data=plot_data_raw, ft_kinematic_col=ft_col, hm_kinematic_col=hm_col, imaging_col=TARGET_IMAGING_COL,
-                    ft_stats=ft_stats_dict, hm_stats=hm_stats_dict, output_folder=plots_folder, file_name=file_name
-                )
+            # Retrieve stats using the correct keys from all_raw_bivariate_results_df
+            ft_stats_row = all_raw_bivariate_results_df[
+                (all_raw_bivariate_results_df['Task'] == 'ft') &
+                (all_raw_bivariate_results_df['Kinematic Variable'] == ft_col) # Match full name
+            ]
+            hm_stats_row = all_raw_bivariate_results_df[
+                (all_raw_bivariate_results_df['Task'] == 'hm') &
+                (all_raw_bivariate_results_df['Kinematic Variable'] == hm_col) # Match full name
+            ]
+
+            # Create stats dictionaries expected by the plotting function
+            ft_stats_dict = {}
+            if not ft_stats_row.empty:
+                ft_r = ft_stats_row.iloc[0].get('Pearson Correlation (r)', np.nan)
+                ft_p = ft_stats_row.iloc[0].get('P-value (uncorrected)', np.nan)
+                ft_n = ft_stats_row.iloc[0].get('N', np.nan) # Use N from the specific correlation calc
+                ft_stats_dict = {'r': ft_r, 'p': ft_p, 'r2': ft_r**2 if pd.notna(ft_r) else np.nan, 'N': int(ft_n) if pd.notna(ft_n) else 0}
+
+            hm_stats_dict = {}
+            if not hm_stats_row.empty:
+                hm_r = hm_stats_row.iloc[0].get('Pearson Correlation (r)', np.nan)
+                hm_p = hm_stats_row.iloc[0].get('P-value (uncorrected)', np.nan)
+                hm_n = hm_stats_row.iloc[0].get('N', np.nan) # Use N from the specific correlation calc
+                hm_stats_dict = {'r': hm_r, 'p': hm_p, 'r2': hm_r**2 if pd.notna(hm_r) else np.nan, 'N': int(hm_n) if pd.notna(hm_n) else 0}
+
+            # Generate plot filename
+            file_name = f"task_comparison_BOTH_SIG_{base_col}_vs_{TARGET_IMAGING_BASE}_OFF.png"
+
+            # Call the plotting function
+            plot_task_comparison_scatter(
+                data=plot_data_raw, # Use the potentially smaller df specific to this plot
+                ft_kinematic_col=ft_col,
+                hm_kinematic_col=hm_col,
+                imaging_col=TARGET_IMAGING_COL,
+                ft_stats=ft_stats_dict,
+                hm_stats=hm_stats_dict,
+                output_folder=plots_folder,
+                file_name=file_name
+            )
+
 elif not PLOT_AVAILABLE:
-    print("Bivariate plotting skipped because plotting functions were not found/imported.")
-elif len(significant_in_both_tasks) == 0 :
-    print("Bivariate plotting (Task Comparison) skipped because no kinematic variables were significant in BOTH tasks.")
-print("=== Bivariate Plotting Finished ===")
+    print("Bivariate Task Comparison plotting skipped: Plotting functions unavailable.")
+elif 'significant_in_both_tasks' not in locals() or len(significant_in_both_tasks) == 0 :
+    print("Bivariate Task Comparison plotting skipped: No variables significant in BOTH tasks (OFF Data).")
+print("--- Bivariate Task Comparison Plotting Finished ---")
 
 
-# ---------------------------------------------
-# 5. Plotting PLS Results (For Each Significant LV)
-# ---------------------------------------------
-print("\n=== Generating PLS Plots (For Each Significant LV) ===")
+# --- Plot 2: Ridge Coefficient Plotting ---
+print("\n--- Generating Ridge Coefficient Plots ---")
 if PLOT_AVAILABLE:
-    if not all_pls_results_dict:
-        print("No PLS results dictionary available to generate plots.")
+    if 'all_ridge_results_dict' not in locals() or not all_ridge_results_dict:
+        print("Skipping Ridge plots: Ridge results dictionary missing or empty.")
     else:
-        any_plots_generated = False
-        for task, pls_result_full in all_pls_results_dict.items():
-            if not pls_result_full: continue # Skip if PLS failed for this task
-
-            significant_lvs = pls_result_full.get('significant_lvs', [])
-            if significant_lvs:
-                print(f"\n--- Generating PLS plots for Task: {task.upper()} ---")
-                for lv_index in significant_lvs:
-                    print(f"  Plotting for LV{lv_index}...")
-                    # Extract results specifically for this LV from the full dictionary
-                    lv_specific_results = pls_result_full['lv_results'].get(lv_index)
-                    kinematic_vars = pls_result_full.get('kinematic_variables') # Get list of kinematic var names used
-                    n_samples = pls_result_full.get('n_samples_pls') # Get N for this analysis
-
-                    if lv_specific_results and kinematic_vars is not None:
-                        # Prepare data structure expected by the plotting function
-                        plot_data = lv_specific_results.copy()
-                        plot_data['kinematic_variables'] = kinematic_vars # Add list of var names
-                        plot_data['n_samples_pls'] = n_samples # Add N
-                        plot_data['task'] = task # Add task identifier
-
-                        plot_pls_results(
-                            pls_results_lv=plot_data, lv_index=lv_index,
-                            output_folder=plots_folder, file_name_base=f"pls_{TARGET_IMAGING_BASE}",
-                            bsr_threshold=2.0 # Standard BSR threshold often used
-                        )
-                        any_plots_generated = True
-                    else:
-                         print(f"    Skipping plot for LV{lv_index}: Missing results data or kinematic variable list.")
-
-        if not any_plots_generated:
-             print("No significant PLS LVs found across tasks, so no PLS plots were generated.")
+        for task, ridge_result_full in all_ridge_results_dict.items():
+             if ridge_result_full:
+                 print(f"Generating Ridge plot for Task: {task.upper()} (OFF Data)...")
+                 plot_ridge_coefficients(
+                     ridge_results_task=ridge_result_full,
+                     top_n=PLOT_TOP_N_RIDGE,
+                     output_folder=plots_folder,
+                     file_name_base="ridge_coefficients" # Will add _{task}_OFF.png
+                 )
+             else:
+                 print(f"Skipping Ridge plot for task {task}: No results found.")
 elif not PLOT_AVAILABLE:
-    print("PLS plotting skipped because plotting functions were not found/imported.")
+    print("Ridge plotting skipped: Plotting functions unavailable.")
+print("--- Ridge Coefficient Plotting Finished ---")
 
-print("\n--- Main script finished ---")
+
+# --- Plot 3: Bivariate vs Ridge Comparison Scatter Plot ---
+print("\n--- Generating Bivariate vs Ridge Comparison Scatter Plots ---")
+if PLOT_AVAILABLE:
+    # Check necessary variables exist before proceeding
+    if 'all_raw_bivariate_results_df' not in locals() or all_raw_bivariate_results_df.empty:
+        print("Skipping Bivar vs Ridge plot: Raw bivariate results missing or empty.")
+    elif 'all_ridge_results_dict' not in locals() or not all_ridge_results_dict:
+         print("Skipping Bivar vs Ridge plot: Ridge results missing or empty.")
+    else:
+        # Pass the combined DF containing FDR results for highlighting points
+        fdr_sig_df = combined_significant_bivariate_df if 'combined_significant_bivariate_df' in locals() else pd.DataFrame()
+
+        for task in tasks:
+            if task in all_ridge_results_dict:
+                plot_bivariate_vs_ridge_scatter(
+                    bivariate_results_df=all_raw_bivariate_results_df,
+                    ridge_results_task=all_ridge_results_dict[task],
+                    significant_bivariate_df=fdr_sig_df, # Pass the FDR results
+                    task_prefix=task,
+                    top_n_label=7, # Adjust how many points to label
+                    output_folder=plots_folder
+                    # file_name_base default is okay
+                )
+            else:
+                print(f"Skipping Bivar vs Ridge plot for task {task}: Ridge results not found.")
+
+elif not PLOT_AVAILABLE:
+    print("Bivariate vs Ridge comparison plotting skipped: Plotting functions unavailable.")
+print("--- Bivariate vs Ridge Plotting Finished ---")
+
+
+# --- End of Corrected Section 4 ---

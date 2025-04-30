@@ -1,3 +1,5 @@
+# --- START OF UPDATED FILE datnik_analysis.py ---
+
 import pandas as pd
 import numpy as np
 from scipy.stats import pearsonr
@@ -6,6 +8,14 @@ from sklearn.cross_decomposition import PLSCanonical
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 import time # For timing long operations
+
+
+# <<< ADDED IMPORTS for PCR >>>
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression, RidgeCV
+from sklearn.metrics import r2_score, mean_squared_error
+import statsmodels.api as sm # For p-values of regression coefficients
+# <<< END ADDED IMPORTS >>>
 
 
 def run_correlation_analysis(
@@ -102,7 +112,109 @@ def run_correlation_analysis(
     return significant_results_df
 
 
-# --- UPDATED FUNCTION for PLS Analysis ---
+
+# --- ADD NEW FUNCTION ---
+def run_ridge_analysis(
+    df: pd.DataFrame,
+    base_kinematic_cols: list,
+    task_prefix: str,
+    imaging_col: str,
+    alphas = (0.1, 1.0, 10.0, 100.0, 1000.0), # Alphas for RidgeCV to test
+    cv_folds: int = 5 # Folds for internal CV in RidgeCV
+) -> dict:
+    """
+    Performs Ridge Regression analysis between kinematic variables (X)
+    and an imaging variable (Y), using cross-validation to find alpha.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing OFF-state kinematic and imaging data.
+        base_kinematic_cols (list): Base names of kinematic variables.
+        task_prefix (str): Prefix for the task (e.g., 'ft', 'hm').
+        imaging_col (str): Column name for the single imaging variable (Y).
+        alphas (tuple): Tuple of regularization strengths (alpha) for RidgeCV.
+        cv_folds (int): Number of cross-validation folds for RidgeCV.
+
+
+    Returns:
+        dict: A dictionary containing Ridge Regression results, or None if analysis fails.
+              Includes optimal alpha, coefficients, and R-squared.
+    """
+    print(f"\n--- Running Ridge Regression Analysis for Task: {task_prefix} vs {imaging_col} ---")
+
+    # --- 1. Prepare Data ---
+    kinematic_cols = [f"{task_prefix}_{base}" for base in base_kinematic_cols]
+    valid_kinematic_cols = [col for col in kinematic_cols if col in df.columns]
+
+    if not valid_kinematic_cols or imaging_col not in df.columns:
+        print("Warning: Missing kinematic or imaging columns for Ridge. Skipping.")
+        return None
+
+    ridge_data = df[valid_kinematic_cols + [imaging_col]].copy()
+    for col in ridge_data.columns:
+        ridge_data[col] = pd.to_numeric(ridge_data[col].astype(str).str.replace(',', '.'), errors='coerce')
+
+    ridge_data.dropna(inplace=True)
+    n_samples_ridge = len(ridge_data)
+    n_features = len(valid_kinematic_cols)
+
+    if n_samples_ridge < n_features or n_samples_ridge < cv_folds or n_samples_ridge < 10:
+         print(f"Warning: Insufficient samples (N={n_samples_ridge}) relative to features ({n_features}) or CV folds ({cv_folds}) for Ridge. Skipping.")
+         return None
+
+    X = ridge_data[valid_kinematic_cols].values
+    y = ridge_data[imaging_col].values
+
+    # Scale X data
+    scaler_X = StandardScaler()
+    X_scaled = scaler_X.fit_transform(X)
+    # Y data does not strictly need scaling for Ridge, but prediction metrics are on original scale
+
+    # --- 2. Fit RidgeCV Model ---
+    try:
+        print(f"Fitting RidgeCV (folds={cv_folds}, testing alphas={alphas})...")
+        # Use 'neg_mean_squared_error' as scoring for CV, RidgeCV maximizes this (minimizes MSE)
+        ridge_cv = RidgeCV(alphas=alphas, cv=cv_folds, scoring='neg_mean_squared_error')
+        ridge_cv.fit(X_scaled, y)
+
+        optimal_alpha = ridge_cv.alpha_
+        coefficients = ridge_cv.coef_
+        intercept = ridge_cv.intercept_
+
+        # Calculate R^2 on the full dataset (as RidgeCV doesn't directly expose CV scores easily)
+        # Note: This R^2 might be slightly optimistic compared to a separate test set
+        y_pred = ridge_cv.predict(X_scaled)
+        r2_full = r2_score(y, y_pred)
+        rmse_full = np.sqrt(mean_squared_error(y, y_pred))
+
+        print(f"RidgeCV completed. Optimal alpha: {optimal_alpha:.4f}")
+        print(f"Model fit (on full data used for CV): R^2 = {r2_full:.4f}, RMSE = {rmse_full:.4f}")
+
+        # Store coefficients in a Series
+        coeffs_series = pd.Series(coefficients, index=valid_kinematic_cols)
+
+    except Exception as e:
+        print(f"Error during RidgeCV fitting: {e}")
+        return None
+
+    # --- 3. Prepare Output ---
+    final_results = {
+        'task': task_prefix,
+        'n_samples_ridge': n_samples_ridge,
+        'kinematic_variables': valid_kinematic_cols,
+        'imaging_variable': imaging_col,
+        'optimal_alpha': optimal_alpha,
+        'coefficients': coeffs_series,
+        'intercept': intercept,
+        'r2_full_data': r2_full,
+        'rmse_full_data': rmse_full
+    }
+
+    print(f"--- Ridge Regression Analysis Finished for Task {task_prefix} ---")
+    return final_results
+
+# --- END OF NEW RIDGE FUNCTION ---
+
+# --- FUNCTION for PLS Analysis ---
 def run_pls_analysis(
     df: pd.DataFrame,
     base_kinematic_cols: list,
@@ -130,28 +242,7 @@ def run_pls_analysis(
         alpha (float): Significance level for permutation tests.
 
     Returns:
-        dict: A dictionary containing PLS results, structured as:
-              {
-                  'task': str,
-                  'significant_lvs': list[int], # List of 1-based indices of significant LVs
-                  'lv_results': {
-                      lv_index (int): { # Results for specific LV (1-based index)
-                          'significant': bool,
-                          'p_value': float,
-                          'correlation': float,
-                          'x_loadings': pd.Series | None,
-                          'y_loadings': float | None, # Only one Y variable
-                          'bootstrap_ratios': pd.Series | None,
-                          'x_scores': np.array | None, # Scores for this LV
-                          'y_scores': np.array | None  # Scores for this LV
-                      },
-                      ...
-                  },
-                  'kinematic_variables': list[str],
-                  'n_samples_pls': int,
-                  'max_components_tested': int
-              }
-              Returns None if analysis cannot be run (e.g., insufficient data).
+        dict: A dictionary containing PLS results, or None if analysis fails.
     """
     print(f"\n--- Running PLS Analysis for Task: {task_prefix} vs {imaging_col} (Max LVs: {max_components}) ---")
 
@@ -177,7 +268,6 @@ def run_pls_analysis(
     # Determine effective max components based on data shape
     n_features_x = len(valid_kinematic_cols)
     n_features_y = 1 # Only one imaging variable
-    # PLS requires N >= K, K >= n_components, P >= n_components, Q >= n_components
     effective_max_components = min(max_components, n_samples_pls, n_features_x, n_features_y)
 
     if n_samples_pls < 10 or effective_max_components == 0:
@@ -200,7 +290,6 @@ def run_pls_analysis(
         print(f"Fitting initial PLS model with {effective_max_components} components...")
         pls = PLSCanonical(n_components=effective_max_components, scale=False) # Data is already scaled
         pls.fit(X_scaled, Y_scaled)
-        # Get scores for ALL computed components
         x_scores_orig, y_scores_orig = pls.transform(X_scaled, Y_scaled) # Shape: (n_samples, n_components)
     except Exception as e:
         print(f"Error fitting initial PLS model: {e}")
@@ -212,155 +301,246 @@ def run_pls_analysis(
     lv_p_values = np.full(effective_max_components, np.nan)
     lv_correlations = np.full(effective_max_components, np.nan)
     significant_lvs_indices = [] # Store 0-based indices here
-
-    y_shuffled = Y_scaled.copy() # Use a copy for shuffling
+    y_shuffled = Y_scaled.copy()
 
     for lv_idx in range(effective_max_components):
-        # Calculate actual correlation for this LV
         try:
-            # Use original scores for actual correlation
             r_actual, _ = pearsonr(x_scores_orig[:, lv_idx], y_scores_orig[:, lv_idx])
             lv_correlations[lv_idx] = r_actual if pd.notna(r_actual) else np.nan
-        except ValueError: # Handle potential constant score arrays
+        except ValueError:
              r_actual = 0.0
              lv_correlations[lv_idx] = 0.0
              print(f"Warning: Could not calculate correlation for LV{lv_idx+1} (constant scores?). Setting r=0.")
 
-        # Run permutations for this specific LV
         perm_corrs_lv = np.zeros(n_permutations)
         print(f"  Permuting for LV{lv_idx+1} (Actual r={r_actual:.4f})...", end="", flush=True)
         perm_loop_start = time.time()
-        n_valid_perms = 0
         for i in range(n_permutations):
-            np.random.shuffle(y_shuffled) # Shuffle Y each time
+            np.random.shuffle(y_shuffled)
             try:
-                # Re-fit PLS with shuffled Y
                 pls_perm = PLSCanonical(n_components=effective_max_components, scale=False)
                 pls_perm.fit(X_scaled, y_shuffled)
-                # Get permuted scores
                 x_scores_perm, y_scores_perm = pls_perm.transform(X_scaled, y_shuffled)
-                # Calculate correlation for the CURRENT LV index using permuted scores
                 r_perm, _ = pearsonr(x_scores_perm[:, lv_idx], y_scores_perm[:, lv_idx])
-                perm_corrs_lv[i] = r_perm if pd.notna(r_perm) else 0.0 # Store 0 if NaN
-                n_valid_perms += 1
-            except Exception: # Catch potential errors during permuted fit/transform/corr
-                perm_corrs_lv[i] = np.nan # Mark as invalid
+                perm_corrs_lv[i] = r_perm if pd.notna(r_perm) else 0.0
+            except Exception:
+                perm_corrs_lv[i] = np.nan
 
         perm_loop_end = time.time()
         print(f" done ({perm_loop_end - perm_loop_start:.1f}s).")
 
-        # Calculate p-value for this LV
         valid_perm_corrs_lv = perm_corrs_lv[~np.isnan(perm_corrs_lv)]
-        if len(valid_perm_corrs_lv) < n_permutations * 0.8: # Check if too many permutations failed
-             print(f"Warning: High number of failed permutations ({n_permutations - len(valid_perm_corrs_lv)}) for LV{lv_idx+1}. P-value may be unreliable.")
+        if len(valid_perm_corrs_lv) < n_permutations * 0.8:
+             print(f"Warning: High number of failed permutations ({n_permutations - len(valid_perm_corrs_lv)}) for LV{lv_idx+1}.")
 
-        if len(valid_perm_corrs_lv) == 0 or np.isnan(r_actual):
-            p_value_lv = 1.0
-        else:
-             # Two-tailed test: Count how many permuted |r| >= actual |r|
-            p_value_lv = (np.sum(np.abs(valid_perm_corrs_lv) >= np.abs(r_actual)) + 1) / (len(valid_perm_corrs_lv) + 1)
+        if len(valid_perm_corrs_lv) == 0 or np.isnan(r_actual): p_value_lv = 1.0
+        else: p_value_lv = (np.sum(np.abs(valid_perm_corrs_lv) >= np.abs(r_actual)) + 1) / (len(valid_perm_corrs_lv) + 1)
 
         lv_p_values[lv_idx] = p_value_lv
         print(f"  LV{lv_idx+1}: p = {p_value_lv:.4f}")
 
-        # Check significance and decide whether to continue
-        if p_value_lv <= alpha:
-            significant_lvs_indices.append(lv_idx) # Store 0-based index
+        if p_value_lv <= alpha: significant_lvs_indices.append(lv_idx)
         else:
             print(f"  LV{lv_idx+1} is not significant (p > {alpha}). Stopping permutation tests.")
-            break # Stop testing further LVs
+            break
 
     perm_end_time = time.time()
     print(f"Permutation testing finished ({perm_end_time - perm_start_time:.1f}s). Found {len(significant_lvs_indices)} significant LVs.")
 
     # --- 4. Bootstrapping for Loading Stability (Only for Significant LVs) ---
-    all_bootstrap_ratios = {} # Store BSR series per significant LV index (0-based)
-
+    all_bootstrap_ratios = {}
     if significant_lvs_indices and n_bootstraps > 0:
         print(f"Running {n_bootstraps} bootstraps for {len(significant_lvs_indices)} significant LVs...")
         boot_start_time = time.time()
-
-        # Store bootstrap loadings temporarily, indexed by lv_idx
         x_loadings_boot_all_lvs = {lv_idx: [] for lv_idx in significant_lvs_indices}
-
         n_boot_success = 0
         for i in range(n_bootstraps):
-            # Resample data with replacement
             indices = resample(np.arange(n_samples_pls))
             X_boot, Y_boot = X_scaled[indices], Y_scaled[indices]
-
             try:
                 pls_boot = PLSCanonical(n_components=effective_max_components, scale=False)
                 pls_boot.fit(X_boot, Y_boot)
-
-                # Store loadings for EACH significant LV from this bootstrap run
                 for lv_idx in significant_lvs_indices:
-                     # Ensure the fitted model actually has this many components' loadings
                      if lv_idx < pls_boot.x_loadings_.shape[1]:
                          x_loadings_boot_all_lvs[lv_idx].append(pls_boot.x_loadings_[:, lv_idx])
-                     # else: model might have collapsed dimensionality, skip this LV for this bootstrap
-
                 n_boot_success += 1
-                if (i + 1) % (n_bootstraps // 5) == 0: # Print progress periodically
-                    print(f"  Bootstrap {i+1}/{n_bootstraps} completed.")
-
-            except Exception:
-                continue # Skip this bootstrap iteration if it fails
+                # Optional: Print progress less frequently for speed
+                # if (i + 1) % (n_bootstraps // 10) == 0: print(f"  Bootstrap {i+1}/{n_bootstraps} completed.")
+            except Exception: continue
 
         print(f"  Finished {n_boot_success}/{n_bootstraps} successful bootstrap iterations.")
-
-        # Calculate BSRs for each significant LV
         for lv_idx in significant_lvs_indices:
             loadings_boot_lv = x_loadings_boot_all_lvs[lv_idx]
-            if len(loadings_boot_lv) > 1: # Need at least 2 successful bootstraps for std dev
+            if len(loadings_boot_lv) > 1:
                 loadings_boot_lv = np.array(loadings_boot_lv)
-                # Use original loadings for the numerator (more stable estimate of effect)
                 original_loadings_lv = pls.x_loadings_[:, lv_idx]
-                loadings_std_lv = np.std(loadings_boot_lv, axis=0)
-
-                # Calculate BSR = original_loading / bootstrap_std_error
-                non_zero_std_mask_lv = loadings_std_lv > 1e-9 # Avoid division by zero/tiny numbers
-                bsr_lv = np.full_like(original_loadings_lv, np.nan) # Initialize with NaN
+                loadings_std_lv = np.std(loadings_boot_lv, axis=0, ddof=1) # Use sample std dev (ddof=1)
+                non_zero_std_mask_lv = loadings_std_lv > 1e-9
+                bsr_lv = np.full_like(original_loadings_lv, np.nan)
                 bsr_lv[non_zero_std_mask_lv] = original_loadings_lv[non_zero_std_mask_lv] / loadings_std_lv[non_zero_std_mask_lv]
-
                 all_bootstrap_ratios[lv_idx] = pd.Series(bsr_lv, index=valid_kinematic_cols)
             else:
-                print(f"Warning: Insufficient successful bootstrap samples ({len(loadings_boot_lv)}) to calculate BSR for LV{lv_idx+1}. Setting BSR to NaN.")
-                all_bootstrap_ratios[lv_idx] = pd.Series(np.nan, index=valid_kinematic_cols) # Fill with NaN
+                print(f"Warning: Insufficient successful bootstraps ({len(loadings_boot_lv)}) for BSR LV{lv_idx+1}. Setting to NaN.")
+                all_bootstrap_ratios[lv_idx] = pd.Series(np.nan, index=valid_kinematic_cols)
 
         boot_end_time = time.time()
         print(f"Bootstrapping finished ({boot_end_time - boot_start_time:.1f}s).")
-    elif not significant_lvs_indices:
-         print("No significant LVs found, skipping bootstrapping.")
-    else: # n_bootstraps <= 0
-         print("n_bootstraps set to 0, skipping bootstrapping.")
+    elif not significant_lvs_indices: print("No significant LVs found, skipping bootstrapping.")
+    else: print("n_bootstraps <= 0, skipping bootstrapping.")
 
     # --- 5. Prepare Output ---
     final_results = {
         'task': task_prefix,
-        'significant_lvs': [idx + 1 for idx in significant_lvs_indices], # Return 1-based indices
+        'significant_lvs': [idx + 1 for idx in significant_lvs_indices], # 1-based indices
         'lv_results': {},
         'kinematic_variables': valid_kinematic_cols,
         'n_samples_pls': n_samples_pls,
         'max_components_tested': effective_max_components
     }
-
-    # Populate results for each tested LV
     for lv_idx in range(effective_max_components):
-        lv_num = lv_idx + 1 # User-facing LV number (1-based)
+        lv_num = lv_idx + 1 # 1-based
         is_significant = lv_idx in significant_lvs_indices
-
-        # Store original loadings/scores always, BSR only if significant & computed
         final_results['lv_results'][lv_num] = {
             'significant': is_significant,
             'p_value': lv_p_values[lv_idx],
             'correlation': lv_correlations[lv_idx],
             'x_loadings': pd.Series(pls.x_loadings_[:, lv_idx], index=valid_kinematic_cols),
-            'y_loadings': pls.y_loadings_[0, lv_idx], # Y is (1, n_comp), access row 0, col lv_idx
-            'bootstrap_ratios': all_bootstrap_ratios.get(lv_idx, None), # Get BSR if computed for this LV
-            'x_scores': x_scores_orig[:, lv_idx], # Original scores for this LV
-            'y_scores': y_scores_orig[:, lv_idx]  # Original scores for this LV
+            'y_loadings': pls.y_loadings_[0, lv_idx],
+            'bootstrap_ratios': all_bootstrap_ratios.get(lv_idx, None),
+            'x_scores': x_scores_orig[:, lv_idx],
+            'y_scores': y_scores_orig[:, lv_idx]
         }
-
     print(f"--- PLS Analysis Finished for Task {task_prefix} ---")
     return final_results
+
+
+# <<< --- START OF NEW PCR FUNCTION --- >>>
+def run_pcr_analysis(
+    df: pd.DataFrame,
+    base_kinematic_cols: list,
+    task_prefix: str,
+    imaging_col: str,
+    n_components_pca: int = 10, # Number of PCs to initially extract
+    alpha: float = 0.05 # Significance level for PC regression coefficients
+) -> dict:
+    """
+    Performs Principal Component Regression (PCR) analysis between kinematic
+    variables (X) and an imaging variable (Y).
+
+    Args:
+        df (pd.DataFrame): DataFrame containing OFF-state kinematic and imaging data.
+        base_kinematic_cols (list): Base names of kinematic variables.
+        task_prefix (str): Prefix for the task (e.g., 'ft', 'hm').
+        imaging_col (str): Column name for the single imaging variable (Y).
+        n_components_pca (int): Max number of principal components to extract from X.
+        alpha (float): Significance level for regression coefficients of PCs predicting Y.
+
+    Returns:
+        dict: A dictionary containing PCR results, or None if analysis fails.
+              Includes PCA loadings, explained variance, and regression results for PCs.
+    """
+    print(f"\n--- Running PCR Analysis for Task: {task_prefix} vs {imaging_col} ---")
+
+    # --- 1. Prepare Data ---
+    kinematic_cols = [f"{task_prefix}_{base}" for base in base_kinematic_cols]
+    valid_kinematic_cols = [col for col in kinematic_cols if col in df.columns]
+
+    if not valid_kinematic_cols or imaging_col not in df.columns:
+        print("Warning: Missing kinematic or imaging columns for PCR. Skipping.")
+        return None
+
+    pcr_data = df[valid_kinematic_cols + [imaging_col]].copy()
+    for col in pcr_data.columns:
+        pcr_data[col] = pd.to_numeric(pcr_data[col].astype(str).str.replace(',', '.'), errors='coerce')
+
+    pcr_data.dropna(inplace=True)
+    n_samples_pcr = len(pcr_data)
+    n_features = len(valid_kinematic_cols)
+
+    # Adjust n_components if needed
+    effective_n_components = min(n_components_pca, n_samples_pcr -1 , n_features) # N-1 for PCA stability
+    if effective_n_components <= 0: # Check if non-positive
+         print(f"Warning: Insufficient samples ({n_samples_pcr}) or features ({n_features}) for PCA. Skipping PCR.")
+         return None
+    if effective_n_components < n_components_pca:
+         print(f"Note: Reduced PCA components from {n_components_pca} to {effective_n_components} due to data dimensions (N={n_samples_pcr}, K={n_features}).")
+
+    X = pcr_data[valid_kinematic_cols].values
+    y = pcr_data[imaging_col].values
+
+    # Scale X data for PCA
+    scaler_X = StandardScaler()
+    X_scaled = scaler_X.fit_transform(X)
+    y_target = y # Use original scale y for regression outcome
+
+    # --- 2. Perform PCA on X ---
+    try:
+        print(f"Performing PCA with {effective_n_components} components...")
+        pca = PCA(n_components=effective_n_components)
+        X_pca_scores = pca.fit_transform(X_scaled) # Shape: (n_samples, n_components)
+        explained_variance_ratio = pca.explained_variance_ratio_
+        pca_loadings = pca.components_ # Shape: (n_components, n_features)
+    except Exception as e:
+        print(f"Error during PCA: {e}")
+        return None
+
+    pca_results = {
+        'n_components': effective_n_components,
+        'explained_variance_ratio': explained_variance_ratio.tolist(), # Convert to list for consistency/saving
+        'cumulative_explained_variance': np.cumsum(explained_variance_ratio).tolist(),
+        'loadings': pd.DataFrame(pca_loadings.T, index=valid_kinematic_cols, columns=[f'PC{i+1}' for i in range(effective_n_components)])
+    }
+    print(f"PCA completed. Cumulative variance explained by {effective_n_components} PCs: {pca_results['cumulative_explained_variance'][-1]:.3f}")
+
+    # --- 3. Regression using PC Scores ---
+    print("Performing regression: Y ~ PC1 + PC2 + ...")
+    # Add constant for statsmodels regression
+    X_pca_scores_with_const = sm.add_constant(X_pca_scores, has_constant='add') # Explicitly add constant
+
+    try:
+        model = sm.OLS(y_target, X_pca_scores_with_const)
+        results = model.fit()
+        # Construct nice names for summary output
+        pc_names = [f'PC{i+1}' for i in range(effective_n_components)]
+        print(results.summary(xname=['const'] + pc_names)) # Print full summary
+
+        # Prepare results dictionary, ensuring keys match expected access later
+        coefficients_dict = results.params.to_dict()
+        p_values_dict = results.pvalues.to_dict()
+        conf_int_df = results.conf_int()
+        conf_int_dict = {col: conf_int_df[col].to_dict() for col in conf_int_df.columns}
+
+        regression_summary = {
+            'r_squared': results.rsquared,
+            'adj_r_squared': results.rsquared_adj,
+            'f_pvalue': results.f_pvalue,
+            'coefficients': coefficients_dict, # Use dict
+            'p_values': p_values_dict,         # Use dict
+            'conf_int': conf_int_dict          # Use dict
+        }
+
+        # Identify significant PCs based on alpha (skip intercept 'const')
+        significant_pcs = [pc for pc, p in p_values_dict.items() if pc != 'const' and p < alpha]
+        regression_summary['significant_pcs'] = significant_pcs
+        print(f"\nSignificant PCs predicting {imaging_col} (alpha={alpha}): {significant_pcs if significant_pcs else 'None'}")
+
+    except Exception as e:
+        print(f"Error during OLS regression on PCs: {e}")
+        regression_summary = None
+
+    # --- 4. Combine Results ---
+    final_results = {
+        'task': task_prefix,
+        'n_samples_pcr': n_samples_pcr,
+        'kinematic_variables': valid_kinematic_cols,
+        'imaging_variable': imaging_col,
+        'pca_results': pca_results,
+        'regression_results': regression_summary
+    }
+
+    print(f"--- PCR Analysis Finished for Task {task_prefix} ---")
+    return final_results
+
+# <<< --- END OF NEW PCR FUNCTION --- >>>
+
+# --- END OF UPDATED FILE datnik_analysis.py ---

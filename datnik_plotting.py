@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import pearsonr
 
 # --- Mapping for Readable Kinematic Names ---
 READABLE_KINEMATIC_NAMES = {
@@ -282,3 +283,253 @@ def plot_pls_results(
             except Exception as e_save: print(f"  ERROR saving PLS scores plot {scores_path}: {type(e_save).__name__} - {e_save}")
         except Exception as e_plot: print(f"  ERROR during PLS scores plot generation: {type(e_plot).__name__} - {e_plot}")
         finally: plt.close(fig_score)
+        
+        
+def plot_ridge_coefficients(
+    ridge_results_task: dict,
+    top_n: int = 20, # Plot top N features by absolute coefficient
+    output_folder: str = "Output/Plots",
+    file_name_base: str = "ridge_coefficients"
+):
+    """
+    Generates a horizontal bar plot for Ridge Regression coefficients for a specific task.
+
+    Args:
+        ridge_results_task (dict): The dictionary returned by run_ridge_analysis for one task.
+        top_n (int): Number of top features to display based on absolute coefficient value.
+        output_folder (str): Folder path to save the plot.
+        file_name_base (str): Base name for the output PNG file.
+    """
+    task = ridge_results_task.get('task', 'unknown_task')
+    coeffs_series = ridge_results_task.get('coefficients')
+    optimal_alpha = ridge_results_task.get('optimal_alpha', np.nan)
+    r2_full = ridge_results_task.get('r2_full_data', np.nan)
+    n_samples = ridge_results_task.get('n_samples_ridge', 'N/A')
+    imaging_var = ridge_results_task.get('imaging_variable', 'Target')
+
+    if coeffs_series is None or not isinstance(coeffs_series, pd.Series) or coeffs_series.empty:
+        print(f"  Skipping Ridge coefficients plot for task {task}: No coefficient data found.")
+        return
+
+    # Sort by absolute coefficient value
+    coeffs_sorted = coeffs_series.reindex(coeffs_series.abs().sort_values(ascending=False).index)
+    plot_data = coeffs_sorted.head(top_n).iloc[::-1] # Select top N and reverse for plotting
+
+    if plot_data.empty:
+         print(f"  Skipping Ridge coefficients plot for task {task}: No coefficients left after filtering/sorting.")
+         return
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, max(5, len(plot_data) * 0.35))) # Adjust height dynamically
+
+    colors = ['#d62728' if c < 0 else '#1f77b4' for c in plot_data.values] # Red for negative, Blue for positive
+
+    bars = ax.barh(plot_data.index, plot_data.values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.7)
+
+    ax.set_xlabel("Ridge Coefficient Value", fontsize=12)
+    ax.set_ylabel("Kinematic Feature", fontsize=12)
+    title = (f"Ridge Coefficients predicting {imaging_var} - Task {task.upper()} (OFF Data)\n"
+             f"Top {len(plot_data)} Features (Optimal Alpha={optimal_alpha:.2f}, Full Data R²={r2_full:.3f}, N={n_samples})")
+    ax.set_title(title, fontsize=14, weight='bold')
+    ax.axvline(0, color='black', linewidth=0.8, linestyle='--')
+    ax.grid(axis='x', linestyle='--', alpha=0.6)
+    ax.tick_params(axis='y', labelsize=10)
+    sns.despine(ax=ax, left=True, bottom=False) # Remove left spine for clarity
+
+    # Add coefficient values as text labels (optional, can be cluttered)
+    # for bar in bars:
+    #     width = bar.get_width()
+    #     label_x_pos = width + (0.01 * ax.get_xlim()[1]) if width >= 0 else width - (0.01 * ax.get_xlim()[1])
+    #     ax.text(label_x_pos, bar.get_y() + bar.get_height()/2., f'{width:.2f}',
+    #             va='center', ha='left' if width >= 0 else 'right', fontsize=8)
+
+
+    plt.tight_layout()
+    plot_filename = f"{file_name_base}_{task}_OFF.png"
+    plot_path = os.path.join(output_folder, plot_filename)
+    try:
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"  Ridge coefficients plot saved to {plot_path}")
+    except Exception as e_save:
+        print(f"  ERROR saving Ridge coefficients plot {plot_path}: {type(e_save).__name__} - {e_save}")
+    finally:
+        plt.close(fig)
+
+
+# Attempt to import adjustText, but make it optional
+try:
+    from adjustText import adjust_text
+    ADJUSTTEXT_AVAILABLE = True
+except ImportError:
+    ADJUSTTEXT_AVAILABLE = False
+
+# --- Keep other functions like get_readable_name, plot_task_comparison_scatter etc. ---
+
+def plot_bivariate_vs_ridge_scatter(
+    bivariate_results_df: pd.DataFrame, # DataFrame from all_raw_bivariate_results_list
+    ridge_results_task: dict,          # Single task results from all_ridge_results_dict
+    significant_bivariate_df: pd.DataFrame, # DF with FDR significant bivariate results
+    task_prefix: str,                  # 'ft' or 'hm'
+    top_n_label: int = 5,              # How many top Ridge features to label
+    output_folder: str = "Output/Plots",
+    file_name_base: str = "bivar_vs_ridge_scatter"
+):
+    """
+    Creates a scatter plot comparing bivariate Pearson r and Ridge coefficients.
+
+    Args:
+        bivariate_results_df (pd.DataFrame): DF containing raw bivariate results for all tasks,
+                                             MUST contain 'Task', 'Kinematic Variable', and
+                                             'Pearson Correlation (r)' columns.
+        ridge_results_task (dict): Ridge results for the specific task.
+        significant_bivariate_df (pd.DataFrame): Filtered DF containing only FDR significant
+                                                 bivariate results. Must contain 'Task' and
+                                                 'Kinematic Variable' columns if not empty.
+        task_prefix (str): The task prefix ('ft' or 'hm').
+        top_n_label (int): Number of top features (by abs Ridge coeff) to label.
+        output_folder (str): Folder path to save the plot.
+        file_name_base (str): Base name for the output PNG file.
+    """
+    print(f"\n--- Generating Bivariate vs Ridge Scatter for Task: {task_prefix.upper()} ---")
+
+    # --- Prepare Data ---
+    # Get Ridge coefficients
+    coeffs_series = ridge_results_task.get('coefficients')
+    if coeffs_series is None or not isinstance(coeffs_series, pd.Series) or coeffs_series.empty:
+        print(f"  Skipping plot for task {task_prefix}: Missing Ridge coefficients.")
+        return
+    ridge_df = coeffs_series.reset_index()
+    ridge_df.columns = ['Feature', 'Ridge_Coefficient'] # Feature column has full name like 'ft_...'
+
+    # Get Bivariate results for this task
+    bivar_task_df = bivariate_results_df[bivariate_results_df['Task'] == task_prefix].copy()
+    if bivar_task_df.empty:
+        print(f"  Skipping plot for task {task_prefix}: Missing Bivariate results for this task.")
+        return
+
+    # Check for required column from bivariate results
+    if 'Kinematic Variable' not in bivar_task_df.columns:
+         print(f"  Skipping plot for task {task_prefix}: 'Kinematic Variable' column missing in bivariate results df.")
+         return
+    if 'Pearson Correlation (r)' not in bivar_task_df.columns:
+         print(f"  Skipping plot for task {task_prefix}: 'Pearson Correlation (r)' column missing in bivariate results df.")
+         return
+
+    # Select and rename columns for merging
+    bivar_task_df = bivar_task_df[['Kinematic Variable', 'Pearson Correlation (r)']].rename(
+        columns={'Kinematic Variable': 'Feature', 'Pearson Correlation (r)': 'Bivariate_r'}
+    )
+
+    # Get list of FDR significant features for this task
+    sig_bivar_features = []
+    # Check if the significant df exists, is not empty, and has the necessary columns
+    if significant_bivariate_df is not None and not significant_bivariate_df.empty and \
+       'Task' in significant_bivariate_df.columns and 'Kinematic Variable' in significant_bivariate_df.columns:
+        sig_rows = significant_bivariate_df[significant_bivariate_df['Task'] == task_prefix]
+        if not sig_rows.empty:
+             sig_bivar_features = sig_rows['Kinematic Variable'].tolist()
+
+    # Merge Ridge and Bivariate results based on the full feature name
+    merged_df = pd.merge(bivar_task_df, ridge_df, on='Feature', how='inner')
+    if merged_df.empty:
+        print(f"  Skipping plot for task {task_prefix}: No common features after merging Bivariate and Ridge results.")
+        return
+
+    # Add significance flag based on the extracted list
+    merged_df['Significant_Bivariate'] = merged_df['Feature'].isin(sig_bivar_features)
+
+    # Drop rows with NaN correlation or coefficient values before plotting/calculating corr
+    merged_df.dropna(subset=['Bivariate_r', 'Ridge_Coefficient'], inplace=True)
+    if merged_df.empty:
+        print(f"  Skipping plot for task {task_prefix}: No valid data points after dropping NaNs.")
+        return
+
+    # --- Create Plot ---
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(9, 8))
+
+    # Define point styles based on significance
+    markers = {True: "X", False: "o"} # X for significant, o for non-significant
+    sizes = {True: 80, False: 50}
+
+    sns.scatterplot(
+        data=merged_df,
+        x='Bivariate_r',
+        y='Ridge_Coefficient',
+        style='Significant_Bivariate', # Use style for significance
+        markers=markers,
+        size='Significant_Bivariate', # Use size for significance
+        sizes=sizes,
+        alpha=0.7, # Overall alpha
+        hue='Significant_Bivariate', # Use hue for significance
+        palette={True: '#d62728', False: '#1f77b4'}, # Red=Sig, Blue=Non-sig
+        legend='brief', # Control legend display
+        ax=ax
+    )
+
+    # Add quadrant lines
+    ax.axhline(0, color='grey', linestyle='--', linewidth=0.8, alpha=0.7)
+    ax.axvline(0, color='grey', linestyle='--', linewidth=0.8, alpha=0.7)
+
+    # --- Annotations & Labels ---
+    # Calculate correlation between the plotted coefficients
+    corr_val, p_val = pearsonr(merged_df['Bivariate_r'], merged_df['Ridge_Coefficient'])
+    ax.text(0.05, 0.95, f'r(Bivar, Ridge) = {corr_val:.2f}\np = {p_val:.3g}',
+            transform=ax.transAxes, fontsize=10, va='top',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='whitesmoke', alpha=0.8))
+
+    # Label top N features by Ridge coefficient magnitude
+    top_features = merged_df.reindex(merged_df['Ridge_Coefficient'].abs().sort_values(ascending=False).index).head(top_n_label)
+    texts = []
+    for i, row in top_features.iterrows():
+         # Simple label using base name (remove task prefix)
+         base_name = row['Feature'].replace(f"{task_prefix}_", "")
+         texts.append(ax.text(row['Bivariate_r'], row['Ridge_Coefficient'], base_name, fontsize=8))
+
+    # Adjust text labels to prevent overlap if library is available
+    if ADJUSTTEXT_AVAILABLE and texts:
+        try:
+            adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+        except Exception as e_adjust:
+             print(f"  Warning: adjustText failed: {e_adjust}")
+    elif not ADJUSTTEXT_AVAILABLE:
+        print("  Note: 'adjustText' library not found. Labels might overlap.")
+
+    ax.set_xlabel("Bivariate Pearson r (Feature vs Z-Score)", fontsize=12)
+    ax.set_ylabel("Ridge Regression Coefficient", fontsize=12)
+    imaging_var = ridge_results_task.get('imaging_variable', 'Target')
+    n_points = len(merged_df)
+    ax.set_title(f"Bivariate Correlation vs Ridge Coefficient - Task {task_prefix.upper()} (OFF Data, N={n_points})\nPredicting {imaging_var}", fontsize=14, weight='bold')
+
+    # Customize legend
+    handles, labels = ax.get_legend_handles_labels()
+    # Ensure both True and False are present for consistent legend creation
+    try:
+        # Create labels based on boolean values directly if possible
+        unique_styles = merged_df['Significant_Bivariate'].unique()
+        if True in unique_styles and False in unique_styles:
+            true_idx = labels.index('True'); false_idx = labels.index('False')
+            ax.legend([handles[false_idx], handles[true_idx]],
+                      ['Bivar Non-Sig (q>0.05)', 'Bivar Sig (q<=0.05)'],
+                      title='Bivariate FDR', title_fontsize='10', fontsize='9', loc='lower right')
+        elif True in unique_styles: # Only significant points plotted
+             ax.legend([handles[labels.index('True')]], ['Bivar Sig (q<=0.05)'], title='Bivariate FDR', title_fontsize='10', fontsize='9', loc='lower right')
+        elif False in unique_styles: # Only non-significant points plotted
+             ax.legend([handles[labels.index('False')]], ['Bivar Non-Sig (q>0.05)'], title='Bivariate FDR', title_fontsize='10', fontsize='9', loc='lower right')
+        else: # No points plotted or legend failed
+             ax.legend_.remove() if ax.legend_ else None
+    except (ValueError, IndexError, AttributeError):
+        ax.legend_.remove() if ax.legend_ else None # Fallback: remove legend if error
+
+    plt.tight_layout()
+    plot_filename = f"{file_name_base}_{task_prefix}_OFF.png"
+    plot_path = os.path.join(output_folder, plot_filename)
+    try:
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"  Bivariate vs Ridge scatter plot saved to {plot_path}")
+    except Exception as e_save:
+        print(f"  ERROR saving Bivariate vs Ridge plot {plot_path}: {type(e_save).__name__} - {e_save}")
+    finally:
+        plt.close(fig)
+
+# --- End of updated function ---
