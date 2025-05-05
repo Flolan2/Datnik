@@ -1,3 +1,5 @@
+# --- START OF FILE datnik_predict_datscan.py ---
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -13,6 +15,7 @@ optional resampling, evaluates models, reports aggregated performance
 """
 
 import os
+import sys # <<< ADDED IMPORT SYS >>>
 import pandas as pd
 import numpy as np
 import json
@@ -61,20 +64,19 @@ warnings.filterwarnings("ignore", category=FutureWarning) # Suppress future warn
 # -----------------------------------------------------
 # --- Input Data ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# script_parent_dir will correctly be /Users/Lange_L/Documents/Kinematik/Datnik
 script_parent_dir = os.path.dirname(SCRIPT_DIR)
-if os.path.basename(SCRIPT_DIR).lower() in ['code', 'scripts']:
-    base_dir = script_parent_dir
-else:
-    base_dir = SCRIPT_DIR
 
-INPUT_FOLDER = os.path.join(base_dir, "Input")
-OUTPUT_FOLDER_BASE = os.path.join(base_dir, "Output")
+# <<< CORRECTED PATH DEFINITIONS >>>
+# Directly use script_parent_dir to define Input and Output locations
+INPUT_FOLDER = os.path.join(script_parent_dir, "Input")
+OUTPUT_FOLDER_BASE = os.path.join(script_parent_dir, "Output")
+# DATA_OUTPUT_FOLDER and PLOT_OUTPUT_FOLDER depend on OUTPUT_FOLDER_BASE, so they will be correct now
 DATA_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Data")
 PLOT_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Plots")
 
 # <<< NOTE: Make sure this matches the output of the summarize script >>>
 INPUT_CSV_NAME = "merged_summary_with_medon.csv" # Or "merged_summary.csv" if that's intended
-
 # --- Prediction Target ---
 TARGET_IMAGING_BASE = "Contralateral_Striatum"
 TARGET_Z_SCORE_COL = f"{TARGET_IMAGING_BASE}_Z"
@@ -444,7 +446,8 @@ if __name__ == '__main__':
         os.makedirs(DATA_OUTPUT_FOLDER, exist_ok=True)
         if GENERATE_PLOTS: os.makedirs(PLOT_OUTPUT_FOLDER, exist_ok=True)
     except OSError as e:
-        print(f"Error creating output directories: {e}. Check permissions or path."); exit(1)
+        print(f"Error creating output directories: {e}. Check permissions or path.")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
 
     # --- Print Folder Paths ---
     print(f"Input folder: {INPUT_FOLDER}")
@@ -455,7 +458,8 @@ if __name__ == '__main__':
     input_file_path = os.path.join(INPUT_FOLDER, INPUT_CSV_NAME)
     print(f"\nLoading data from: {input_file_path}")
     if not os.path.exists(input_file_path):
-        print(f"Error: Input file not found at {input_file_path}"); exit(1)
+        print(f"Error: Input file not found at {input_file_path}")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
     try:
         # Try semicolon first, then comma
         try: df = pd.read_csv(input_file_path, sep=';', decimal='.')
@@ -467,7 +471,9 @@ if __name__ == '__main__':
         if TARGET_Z_SCORE_COL not in df.columns: raise ValueError(f"Target column '{TARGET_Z_SCORE_COL}' not found.")
         if GROUP_ID_COL not in df.columns: raise ValueError(f"Group ID column '{GROUP_ID_COL}' not found.")
 
-    except Exception as e: print(f"Error loading or parsing data: {e}"); exit(1)
+    except Exception as e:
+        print(f"Error loading or parsing data: {e}")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
 
     # --- 2. Prepare Target Variable and Group ID (Once) ---
     data_full = df.copy()
@@ -480,7 +486,9 @@ if __name__ == '__main__':
     data_full.dropna(subset=[TARGET_Z_SCORE_COL, GROUP_ID_COL], inplace=True) # Drop rows missing target OR group ID
     if len(data_full) < initial_rows:
         print(f"Dropped {initial_rows - len(data_full)} rows with missing target ('{TARGET_Z_SCORE_COL}') or group ID ('{GROUP_ID_COL}').")
-    if data_full.empty: print("Error: No data after dropping missing target/group ID."); exit(1)
+    if data_full.empty:
+        print("Error: No data after dropping missing target/group ID.")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
 
     target_col_name = 'DatScan_Status'
     data_full[target_col_name] = (data_full[TARGET_Z_SCORE_COL] <= ABNORMALITY_THRESHOLD).astype(int)
@@ -490,7 +498,8 @@ if __name__ == '__main__':
     print(f"Target variable '{target_col_name}' distribution: {y_full.value_counts(normalize=True).round(3).to_dict()}")
     print(f"Number of unique patients: {patient_ids_full.nunique()}")
     if len(y_full.unique()) < 2:
-        print("Error: Target variable has only one class after preparation. Cannot perform classification."); exit(1)
+        print("Error: Target variable has only one class after preparation. Cannot perform classification.")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
 
     # --- 3. Feature Preparation (Once) ---
     all_feature_cols = []
@@ -506,7 +515,9 @@ if __name__ == '__main__':
 
     # Ensure we only keep unique feature columns if base names overlap (unlikely with prefixes)
     all_feature_cols = sorted(list(set(all_feature_cols)))
-    if not all_feature_cols: print("Error: No kinematic features found across all tasks. Exiting."); exit(1)
+    if not all_feature_cols:
+        print("Error: No kinematic features found across all tasks. Exiting.")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
     print(f"Total unique kinematic features identified: {len(all_feature_cols)}")
 
     X_full = data_full[all_feature_cols].copy()
@@ -524,14 +535,18 @@ if __name__ == '__main__':
             y_full = y_full.loc[valid_indices]
             patient_ids_full = patient_ids_full.loc[valid_indices] # Keep groups aligned
             print(f"Dropped {initial_rows - len(X_full)} rows with missing feature values (Imputation strategy is None).")
-        if X_full.empty: print("Error: No data left after dropping rows with NaNs in features."); exit(1)
+        if X_full.empty:
+            print("Error: No data left after dropping rows with NaNs in features.")
+            sys.exit(1) # <<< USE SYS.EXIT >>>
 
     # Final check on data size
     if len(X_full) < 20 or patient_ids_full.nunique() < N_SPLITS_CV * 2 : # Need enough patients for splits
-        print(f"Error: Insufficient data after preparation. Rows={len(X_full)}, Unique Patients={patient_ids_full.nunique()}. Need more data/patients for reliable splitting/CV. Exiting."); exit(1)
+        print(f"Error: Insufficient data after preparation. Rows={len(X_full)}, Unique Patients={patient_ids_full.nunique()}. Need more data/patients for reliable splitting/CV. Exiting.")
+        sys.exit(1) # <<< USE SYS.EXIT >>>
     print(f"Final data shape for modeling: X={X_full.shape}, y={len(y_full)}, Groups={patient_ids_full.nunique()}")
 
     # --- 4. Robustness Check Loop with Group Splitting and Stacking ---
+    # ... (Rest of the script, including the main loop and aggregation, remains unchanged) ...
     all_runs_metrics = collections.defaultdict(lambda: collections.defaultdict(list))
     all_runs_base_importances = collections.defaultdict(lambda: collections.defaultdict(list))
     all_runs_roc_data = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -772,14 +787,13 @@ if __name__ == '__main__':
     print("\n--- All Repetitions Finished ---")
 
     # --- 5. Aggregate and Summarize Results ---
+    # ... (Aggregation and Summary section remains unchanged) ...
     print("\n===== Aggregated Performance Summary (Mean +/- StdDev Across Repetitions) =====")
     overall_summary_stats = []
-    # Define metrics to display in summary
     metric_keys_display = ['roc_auc', 'accuracy', 'f1_macro', 'precision_macro', 'recall_macro']
-    models_to_summarize = list(all_runs_metrics.keys()) # Includes base tasks and 'stacked' if enabled/run
+    models_to_summarize = list(all_runs_metrics.keys())
 
-    for model_key in models_to_summarize: # model_key is task prefix ('ft', 'hm') or 'stacked'
-        # Determine the actual model name used (e.g., 'logistic' or 'logistic_meta')
+    for model_key in models_to_summarize:
         actual_model_name = list(all_runs_metrics[model_key].keys())[0] if all_runs_metrics[model_key] else None
         if not actual_model_name:
             print(f"\n--- Model/Task: {model_key.upper()} ---")
@@ -787,18 +801,14 @@ if __name__ == '__main__':
 
         print(f"\n--- Model/Task: {model_key.upper()} (Using Model: {actual_model_name}) ---")
         model_metrics_list = all_runs_metrics[model_key].get(actual_model_name, [])
-
-        # Filter out empty results (e.g., from skipped runs)
         valid_model_metrics_list = [m for m in model_metrics_list if isinstance(m, dict) and m and any(pd.notna(v) for k, v in m.items() if k in metric_keys_display)]
 
         if not valid_model_metrics_list:
             print(f"No successful/valid runs recorded with metrics for this model/task (Total runs attempted: {len(model_metrics_list)})."); continue
 
         metrics_df = pd.DataFrame(valid_model_metrics_list)
-        # Ensure all desired metric columns exist, filling with NaN if needed
         for mkey in metric_keys_display:
             if mkey not in metrics_df.columns: metrics_df[mkey] = np.nan
-        # Keep only display metrics for summary calculation, plus maybe confusion matrix if needed later
         metrics_df_summary = metrics_df[metric_keys_display].copy()
 
         if metrics_df_summary.isnull().all().all():
@@ -806,35 +816,29 @@ if __name__ == '__main__':
 
         means = metrics_df_summary.mean(skipna=True)
         stds = metrics_df_summary.std(skipna=True)
-        n_valid_runs = metrics_df_summary[metric_keys_display[0]].notna().sum() # Count runs with at least one valid key metric
+        n_valid_runs = metrics_df_summary[metric_keys_display[0]].notna().sum()
 
-        # Store summary stats for final CSV
         task_summary = {'Model_Key': model_key, 'N_Valid_Runs': int(n_valid_runs) }
         for key in metric_keys_display:
              task_summary[f'{key}_mean'] = means.get(key, np.nan)
              task_summary[f'{key}_std'] = stds.get(key, np.nan)
         overall_summary_stats.append(task_summary)
 
-        # Print formatted summary to console
         summary_df_task = pd.DataFrame([task_summary])
         print(f"Mean +/- Std Dev across {n_valid_runs} VALID runs:")
-        # Format mean/std for printing
         for key in metric_keys_display:
             summary_df_task[f'{key}'] = summary_df_task.apply(
                 lambda r: f"{r[f'{key}_mean']:.3f} ± {r[f'{key}_std']:.3f}" if pd.notna(r[f'{key}_mean']) and pd.notna(r[f'{key}_std']) else ("N/A" if pd.isna(r[f'{key}_mean']) else f"{r[f'{key}_mean']:.3f}"),
                 axis=1
             )
         display_cols = ['Model_Key', 'N_Valid_Runs'] + metric_keys_display
-        # Use pandas display options for better alignment
         with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.width', 1000):
             print(summary_df_task[display_cols].to_string(index=False, justify='center'))
 
-    # Save the overall summary statistics table
     if SAVE_AGGREGATED_SUMMARY and overall_summary_stats:
         summary_filename = os.path.join(DATA_OUTPUT_FOLDER, "prediction_group_split_comparison_summary.csv")
         try:
              summary_df_final = pd.DataFrame(overall_summary_stats)
-             # Order columns logically
              cols_order = ['Model_Key', 'N_Valid_Runs'] + sorted([col for col in summary_df_final.columns if col not in ['Model_Key', 'N_Valid_Runs']])
              summary_df_final = summary_df_final[cols_order]
              summary_df_final.to_csv(summary_filename, index=False, sep=';', decimal='.', float_format='%.6f')
@@ -842,40 +846,33 @@ if __name__ == '__main__':
         except Exception as e: print(f"Error saving overall summary: {e}")
 
     # --- 6. Aggregate and Save Coefficients ---
-    aggregated_coeffs_dfs = {} # Store aggregated DFs for plotting
+    # ... (Aggregation and Saving of Coefficients section remains unchanged) ...
+    aggregated_coeffs_dfs = {}
 
-    # Base Model Coefficients
     if SAVE_AGGREGATED_IMPORTANCES:
         print("\n--- Aggregating Base Model Coefficients (Per Task) ---")
         for task_prefix in TASKS_TO_RUN_SEPARATELY:
-             # Get the list of Series objects (coefficients per run)
              coeff_lists = all_runs_base_importances[task_prefix].get(MODEL_NAME, [])
-             # Filter out non-Series or empty Series
              valid_coeffs = [s for s in coeff_lists if isinstance(s, pd.Series) and not s.empty]
 
              if valid_coeffs:
                  n_valid = len(valid_coeffs)
                  print(f"Aggregating coefficients for base task: {task_prefix.upper()} ({n_valid} valid runs)")
                  try:
-                     # Concatenate all series into a DataFrame (index=features, columns=runs)
-                     coeff_df = pd.concat(valid_coeffs, axis=1, join='outer') # Outer join handles cases where features might slightly differ across runs (e.g., due to rare categories handled by pipeline)
-                     # Calculate mean, std dev, and count of valid runs per feature
+                     coeff_df = pd.concat(valid_coeffs, axis=1, join='outer')
                      agg_coeff = pd.DataFrame({
                          'Mean_Coefficient': coeff_df.mean(axis=1, skipna=True),
                          'Std_Coefficient': coeff_df.std(axis=1, skipna=True),
-                         'N_Valid_Runs': coeff_df.notna().sum(axis=1).astype(int) # Count non-NaN coefficients per feature
+                         'N_Valid_Runs': coeff_df.notna().sum(axis=1).astype(int)
                      })
-                     # Sort by absolute mean coefficient for prominence
                      agg_coeff = agg_coeff.reindex(agg_coeff['Mean_Coefficient'].abs().sort_values(ascending=False, na_position='last').index)
-                     aggregated_coeffs_dfs[task_prefix] = agg_coeff # Store for plotting
-                     # Save to CSV
+                     aggregated_coeffs_dfs[task_prefix] = agg_coeff
                      fname = os.path.join(DATA_OUTPUT_FOLDER, f"prediction_{MODEL_NAME}_{task_prefix}_agg_coeffs_groupsplit.csv")
                      agg_coeff.to_csv(fname, sep=';', decimal='.', index_label='Feature', float_format='%.6f')
                      print(f"  -> Saved to: {fname}")
                  except Exception as e: print(f"  Error aggregating/saving coefficients for task {task_prefix}: {e}")
              else: print(f"No valid coefficient data found for task {task_prefix}.")
 
-    # Meta Model Coefficients
     if ENABLE_STACKING and SAVE_META_MODEL_COEFFICIENTS:
         print("\n--- Aggregating Meta-Model Coefficients ---")
         meta_coeff_lists = all_runs_meta_importances.get(META_MODEL_NAME, [])
@@ -892,22 +889,22 @@ if __name__ == '__main__':
                     'N_Valid_Runs': meta_coeff_df.notna().sum(axis=1).astype(int)
                 })
                 agg_meta_coeff = agg_meta_coeff.reindex(agg_meta_coeff['Mean_Coefficient'].abs().sort_values(ascending=False, na_position='last').index)
-                aggregated_coeffs_dfs['stacked'] = agg_meta_coeff # Store for plotting
+                aggregated_coeffs_dfs['stacked'] = agg_meta_coeff
                 fname = os.path.join(DATA_OUTPUT_FOLDER, f"prediction_{META_MODEL_NAME}_agg_coeffs_groupsplit.csv")
                 agg_meta_coeff.to_csv(fname, sep=';', decimal='.', index_label='Base_Model_Prediction_Feature', float_format='%.6f')
                 print(f"  -> Saved to: {fname}")
             except Exception as e: print(f"  Error aggregating/saving meta-model coefficients: {e}")
         else: print(f"No valid coefficient data found for meta-model {META_MODEL_NAME}.")
 
+
     # --- 7. Generate Plots ---
+    # ... (Plot Generation section remains unchanged) ...
     if GENERATE_PLOTS:
         print("\n--- Generating Plots ---")
         sns.set_theme(style="whitegrid")
-        # Determine which models actually produced results to plot
         plot_keys = []
         if TASKS_TO_RUN_SEPARATELY: plot_keys.extend([task for task in TASKS_TO_RUN_SEPARATELY if task in all_runs_metrics and all_runs_metrics[task]])
         if ENABLE_STACKING and 'stacked' in all_runs_metrics:
-             # Check if the 'stacked' key exists and has non-empty results associated with its model name
              stacked_model_name = list(all_runs_metrics['stacked'].keys())[0] if all_runs_metrics['stacked'] else None
              if stacked_model_name and all_runs_metrics['stacked'].get(stacked_model_name):
                  plot_keys.append('stacked')
@@ -916,14 +913,11 @@ if __name__ == '__main__':
             print("No models produced results suitable for plotting.")
         else:
             print(f"Plotting results for models/tasks: {plot_keys}")
-            # Metric Distributions
             for metric in ['roc_auc', 'accuracy', 'f1_macro']:
                  plot_title = f'Test {metric.replace("_"," ").title()} Distribution ({N_REPETITIONS} Runs, Group Split)'
                  fname = os.path.join(PLOT_OUTPUT_FOLDER, f"plot_metric_distribution_{metric}_comparison_groupsplit.png")
                  plot_metric_distributions(all_runs_metrics, plot_keys, metric, plot_title, fname)
 
-            # Aggregated ROC Curves
-            # Check if there's any ROC data available across all models to be plotted
             has_roc_data = any(all_runs_roc_data.get(key) for key in plot_keys)
             if has_roc_data:
                  plot_title_roc = f'Average ROC Curves Comparison ({N_REPETITIONS} Runs, Group Split)'
@@ -931,29 +925,26 @@ if __name__ == '__main__':
                  plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, plot_keys, plot_title_roc, fname)
             else: print("Skipping ROC curve plot: No valid ROC data recorded across runs/models.")
 
-            # Aggregated Coefficients Plots
             for model_key, agg_coeff_df in aggregated_coeffs_dfs.items():
                  if agg_coeff_df is not None and not agg_coeff_df.empty:
-                     # Try to get a representative number of runs from the N_Valid_Runs column
                      n_valid_runs_list = agg_coeff_df['N_Valid_Runs']
                      if not n_valid_runs_list.empty:
                          n_min, n_max = int(n_valid_runs_list.min()), int(n_valid_runs_list.max())
                          n_runs_info = f"{n_min}" if n_min == n_max else f"{n_min}-{n_max}"
-                     else: n_runs_info = "N/A" # Should not happen if agg_coeff_df is valid
+                     else: n_runs_info = "N/A"
 
                      if model_key == 'stacked':
                          model_label = f"Stacked Model ({META_MODEL_NAME})"
                          title = f'Aggregated Meta-Model Coefficients\n({n_runs_info} Valid Runs, Group Split)'
                          fname = os.path.join(PLOT_OUTPUT_FOLDER, f"plot_aggregated_coefficients_{META_MODEL_NAME}_groupsplit.png")
-                         # Plot all meta-coefficients (usually just a few)
                          top_n_plot = len(agg_coeff_df)
-                     else: # Base model
+                     else:
                          model_label = f"Task: {model_key.upper()} ({MODEL_NAME})"
                          title = f'Top {PLOT_TOP_N_COEFFICIENTS} Aggregated Coefficients\n{model_label} ({n_runs_info} Valid Runs, Group Split)'
                          fname = os.path.join(PLOT_OUTPUT_FOLDER, f"plot_aggregated_coefficients_{MODEL_NAME}_{model_key}_groupsplit.png")
                          top_n_plot = PLOT_TOP_N_COEFFICIENTS
 
                      plot_aggregated_coefficients(agg_coeff_df, model_label, top_n_plot, title, fname)
-                 # else: print(f"Skipping coefficient plot for '{model_key}': No aggregated data available.") # Verbose
+
 
     print(f"\n--- Script Finished ({time() - start_time_script:.1f}s Total) ---")

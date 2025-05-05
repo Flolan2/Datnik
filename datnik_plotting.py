@@ -650,6 +650,90 @@ def plot_elasticnet_coefficients_with_significance(
     finally:
         plt.close(fig)
 
-# --- END OF ADDITION to datnik_plotting.py ---
+# --- START OF ADDITION to datnik_plotting.py ---
 
-# --- End of updated function ---
+def plot_single_bivariate_scatter(
+    data: pd.DataFrame,
+    kinematic_col: str,
+    imaging_col: str,
+    stats_dict: dict,
+    output_folder: str = "Output/Plots",
+    file_name: str = "bivariate_scatter.png"
+):
+    """
+    Creates a styled scatter plot for a single kinematic variable vs. an imaging variable.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing the two columns to plot.
+        kinematic_col (str): Name of the kinematic variable column.
+        imaging_col (str): Name of the imaging variable column.
+        stats_dict (dict): Dictionary containing statistics like 'r', 'p', 'q', 'N'.
+        output_folder (str): Folder path to save the plot.
+        file_name (str): Name for the output PNG file.
+    """
+    # --- Style setup ---
+    sns.set_style("whitegrid")
+    point_color = sns.color_palette("Set2")[0]
+    reg_line_color = '#555555'
+    annotation_facecolor = 'whitesmoke'
+    annotation_edgecolor = 'grey'
+
+    # --- Get Readable Names ---
+    readable_kinematic_name = get_readable_name(kinematic_col)
+    readable_imaging_name = get_readable_name(imaging_col)
+
+    os.makedirs(output_folder, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(7, 6)) # Single plot
+    sns.despine(fig=fig)
+
+    # --- Plot Data ---
+    plot_data_clean = data[[kinematic_col, imaging_col]].dropna() # Ensure no NaNs for plotting
+    if plot_data_clean.empty or len(plot_data_clean) < 3:
+        print(f"  Skipping plot {file_name}: Insufficient valid data points ({len(plot_data_clean)}).")
+        plt.close(fig)
+        return
+
+    ax.scatter(plot_data_clean[kinematic_col], plot_data_clean[imaging_col],
+               color=point_color, alpha=0.6, edgecolor='dimgray', linewidth=0.5, s=60)
+
+    # --- Add Regression Line ---
+    try:
+        m, b = np.polyfit(plot_data_clean[kinematic_col], plot_data_clean[imaging_col], 1)
+        x_vals = np.array([plot_data_clean[kinematic_col].min(), plot_data_clean[kinematic_col].max()])
+        ax.plot(x_vals, m * x_vals + b, color=reg_line_color, linewidth=2, linestyle='--')
+    except Exception as e:
+        print(f"  Note: Could not plot regression line for {kinematic_col}: {e}")
+
+    # --- Add Annotation ---
+    r_val = stats_dict.get('r', np.nan)
+    p_val = stats_dict.get('p', np.nan)
+    q_val = stats_dict.get('q', np.nan) # Get FDR q-value
+    n_val = stats_dict.get('N', 0)
+
+    # Format p and q values for display
+    p_str = f"p={p_val:.3g}" if pd.notna(p_val) and p_val >= 0.001 else ("p<0.001" if pd.notna(p_val) else "p=N/A")
+    q_str = f"q={q_val:.3g}" if pd.notna(q_val) and q_val >= 0.001 else ("q<0.001" if pd.notna(q_val) else "q=N/A")
+
+    annotation_text = (f"r = {r_val:.2f}\n{p_str}\n{q_str} (FDR)\nN = {n_val}")
+    ax.text(0.05, 0.95, annotation_text, transform=ax.transAxes, fontsize=10, va='top',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor=annotation_facecolor, edgecolor=annotation_edgecolor, alpha=0.8))
+    ax.margins(0.05)
+
+    # --- Labels and Title ---
+    ax.set_title(f"{readable_kinematic_name}\nvs. {readable_imaging_name} (OFF State)", fontsize=13, weight='bold')
+    ax.set_xlabel(readable_kinematic_name, fontsize=11)
+    ax.set_ylabel(readable_imaging_name, fontsize=11)
+    ax.tick_params(axis='both', which='major', labelsize=10)
+
+    # --- Save Plot ---
+    output_path = os.path.join(output_folder, file_name)
+    try:
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        # print(f"  Saved bivariate plot to {output_path}") # Optional: Can make output verbose
+    except Exception as e:
+        print(f"  Error saving bivariate plot {output_path}: {e}")
+    finally:
+        plt.close(fig)
+
+# --- END OF ADDITION to datnik_plotting.py ---
