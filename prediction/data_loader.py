@@ -1,150 +1,156 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Mon May  5 16:07:12 2025
-
-@author: Lange_L
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Functions for loading and preparing the data.
+Functions for loading and preparing the data FOR BINARY Classification.
 """
 
 import pandas as pd
 import numpy as np
 import os
 import sys
-from . import config # Use relative import
+import logging
+
+logger = logging.getLogger('DatnikExperiment')
 
 def load_data(input_folder, csv_name):
     """Loads the specified CSV file, trying different separators."""
     input_file_path = os.path.join(input_folder, csv_name)
-    print(f"Attempting to load data from: {input_file_path}")
+    logger.info(f"Attempting to load data from: {input_file_path}")
     if not os.path.exists(input_file_path):
-        print(f"Error: Input file not found at {input_file_path}")
+        logger.error(f"Error: Input file not found at {input_file_path}")
         sys.exit(1)
-
     df = None
     try:
-        # Try semicolon first, then comma
         try:
             df = pd.read_csv(input_file_path, sep=';', decimal='.')
-            print("Successfully loaded data using ';' separator.")
-        except (pd.errors.ParserError, UnicodeDecodeError, ValueError, KeyError): # Added KeyError
-             print("Failed read with ';', trying ',' separator...")
+            logger.info("Successfully loaded data using ';' separator.")
+        except:
+             logger.warning("Failed read with ';', trying ',' separator...")
              df = pd.read_csv(input_file_path, sep=',', decimal='.')
-             print("Successfully loaded data using ',' separator.")
-        except Exception as e: # Catch any other potential read errors
-             print(f"An unexpected error occurred during CSV reading: {e}")
-             sys.exit(1)
-
-        print(f"Data loaded successfully. Initial shape: {df.shape}")
+             logger.info("Successfully loaded data using ',' separator.")
+        logger.info(f"Data loaded successfully. Initial shape: {df.shape}")
         return df
-
     except Exception as e:
-        print(f"Error loading or parsing data from {input_file_path}: {e}")
+        logger.exception(f"Error loading or parsing data from {input_file_path}:")
         sys.exit(1)
 
-
-def prepare_data(df):
+# Accepts config object passed from main script
+def prepare_data(df, config):
     """
-    Prepares the dataframe: handles target, groups, features, and basic cleaning.
+    Prepares the dataframe for BINARY classification: handles target, groups, features, cleaning.
     Returns X_full, y_full, groups_full, task_features_map, all_feature_cols
     """
-    print("Preparing data...")
+    logger.info(f"Preparing data for BINARY classification using settings from {config.__name__}.py")
+
     data_full = df.copy()
 
     # 1. Prepare Group ID
     if config.GROUP_ID_COL not in data_full.columns:
-        print(f"Error: Group ID column '{config.GROUP_ID_COL}' not found in data.")
+        logger.error(f"Group ID column '{config.GROUP_ID_COL}' not found.")
         sys.exit(1)
     data_full[config.GROUP_ID_COL] = data_full[config.GROUP_ID_COL].astype(str).str.strip()
     initial_rows = len(data_full)
     data_full.dropna(subset=[config.GROUP_ID_COL], inplace=True)
     if len(data_full) < initial_rows:
-        print(f"Dropped {initial_rows - len(data_full)} rows with missing group ID ('{config.GROUP_ID_COL}').")
+        logger.warning(f"Dropped {initial_rows - len(data_full)} rows with missing group ID ('{config.GROUP_ID_COL}').")
 
-    # 2. Prepare Target Variable
+    # 2. Prepare Z-Score Column (needed for binary target)
     if config.TARGET_Z_SCORE_COL not in data_full.columns:
-        print(f"Error: Target Z-score column '{config.TARGET_Z_SCORE_COL}' not found.")
+        logger.error(f"Target Z-score column '{config.TARGET_Z_SCORE_COL}' not found.")
         sys.exit(1)
-    # Convert target Z-score, handling potential non-numeric values robustly
     data_full[config.TARGET_Z_SCORE_COL] = pd.to_numeric(data_full[config.TARGET_Z_SCORE_COL].astype(str).str.replace(',', '.'), errors='coerce')
     initial_rows = len(data_full)
     data_full.dropna(subset=[config.TARGET_Z_SCORE_COL], inplace=True)
     if len(data_full) < initial_rows:
-        print(f"Dropped {initial_rows - len(data_full)} rows with missing target Z-score ('{config.TARGET_Z_SCORE_COL}').")
-
+        logger.warning(f"Dropped {initial_rows - len(data_full)} rows with missing/invalid target Z-score ('{config.TARGET_Z_SCORE_COL}').")
     if data_full.empty:
-        print("Error: No data remaining after handling missing Group IDs or Target Z-scores.")
+        logger.error("No data remaining after handling missing Group IDs or Target Z-scores.")
         sys.exit(1)
 
-    # Create binary target column
-    data_full[config.TARGET_COLUMN_NAME] = (data_full[config.TARGET_Z_SCORE_COL] <= config.ABNORMALITY_THRESHOLD).astype(int)
-    y_full = data_full[config.TARGET_COLUMN_NAME]
-    groups_full = data_full[config.GROUP_ID_COL] # Patient IDs for splitting
+    # 3. Define BINARY Target Variable
+    y_full = None
+    target_col_name = config.TARGET_COLUMN_NAME
+    threshold = config.ABNORMALITY_THRESHOLD
+    logger.info(f"Defining binary target variable '{target_col_name}' using threshold Z={threshold}")
+    data_full[target_col_name] = (data_full[config.TARGET_Z_SCORE_COL] <= threshold).astype(int)
 
-    print(f"Target variable '{config.TARGET_COLUMN_NAME}' distribution:")
-    print(y_full.value_counts(normalize=True).round(3))
-    print(f"Number of unique patients: {groups_full.nunique()}")
-    if len(y_full.unique()) < 2:
-        print("Error: Target variable has only one class after preparation. Cannot perform classification.")
+    # Clean up (shouldn't have NaNs here unless Z-score was NaN, already handled)
+    initial_rows = len(data_full)
+    data_full.dropna(subset=[target_col_name], inplace=True) # Just in case
+    if len(data_full) < initial_rows:
+        logger.warning(f"Dropped {initial_rows - len(data_full)} rows with missing target label ('{target_col_name}') after assignment.")
+    if data_full.empty:
+        logger.error(f"No data remaining after assigning target variable '{target_col_name}'.")
         sys.exit(1)
+    data_full[target_col_name] = data_full[target_col_name].astype(int)
 
-    # 3. Identify and Prepare Features
+    y_full = data_full[target_col_name]
+    groups_full = data_full[config.GROUP_ID_COL]
+
+    # --- Log target distribution ---
+    logger.info(f"Target variable '{target_col_name}' distribution (N={len(y_full)}):")
+    logger.info(f"\n-- Normalized --\n{y_full.value_counts(normalize=True).sort_index().round(3)}")
+    logger.info(f"\n-- Counts --\n{y_full.value_counts(normalize=False).sort_index()}")
+    n_classes = y_full.nunique()
+    logger.info(f"Number of unique classes in target: {n_classes}")
+    logger.info(f"Number of unique patients: {groups_full.nunique()}")
+    if n_classes < 2:
+        logger.error("Target variable has only one class after final preparation. Cannot perform binary classification.")
+        sys.exit(1)
+    if len(y_full) != len(groups_full):
+         logger.error("Mismatch between length of y_full and groups_full after processing.")
+         sys.exit(1)
+
+    # 4. Identify and Prepare Features
     all_feature_cols = []
     task_features_map = {}
-    print("\nIdentifying features for tasks:")
+    logger.info("Identifying features for tasks:")
     for task_prefix in config.TASKS_TO_RUN_SEPARATELY:
-        task_cols = []
-        for base_col in config.BASE_KINEMATIC_COLS:
-            col_name = f"{task_prefix}_{base_col}"
-            if col_name in data_full.columns:
-                task_cols.append(col_name)
-        # Check if any features were found for the task
+        task_cols = [f"{task_prefix}_{base}" for base in config.BASE_KINEMATIC_COLS if f"{task_prefix}_{base}" in data_full.columns]
         if task_cols:
-            print(f"  - Task '{task_prefix}': Found {len(task_cols)} features.")
+            logger.info(f"  - Task '{task_prefix}': Found {len(task_cols)} features.")
             task_features_map[task_prefix] = task_cols
             all_feature_cols.extend(task_cols)
         else:
-            print(f"  - Task '{task_prefix}': Warning - No features found matching BASE_KINEMATIC_COLS.")
+            logger.warning(f"  - Task '{task_prefix}': No features found matching BASE_KINEMATIC_COLS.")
 
-    # Ensure we only keep unique feature columns
     all_feature_cols = sorted(list(set(all_feature_cols)))
     if not all_feature_cols:
-        print("Error: No kinematic features found across all specified tasks. Check BASE_KINEMATIC_COLS and task prefixes.")
+        logger.error("No kinematic features found across all specified tasks. Check BASE_KINEMATIC_COLS and task prefixes.")
         sys.exit(1)
-    print(f"Total unique kinematic features identified: {len(all_feature_cols)}")
+    logger.info(f"Total unique kinematic features identified: {len(all_feature_cols)}")
 
     X_full = data_full[all_feature_cols].copy()
-    # Convert all feature columns to numeric, coercing errors
     for col in all_feature_cols:
         X_full[col] = pd.to_numeric(X_full[col].astype(str).str.replace(',', '.'), errors='coerce')
 
-    # Note: We do NOT drop NaNs here. Imputation is handled within the pipeline.
-    # Check for columns that are *entirely* NaN after conversion, as these will cause problems.
     cols_all_nan = X_full.columns[X_full.isnull().all()].tolist()
     if cols_all_nan:
-         print(f"Warning: The following feature columns contain only NaN values and will be dropped: {cols_all_nan}")
+         logger.warning(f"Dropping fully NaN feature columns: {cols_all_nan}")
          X_full.drop(columns=cols_all_nan, inplace=True)
-         all_feature_cols = X_full.columns.tolist() # Update the list of features
-         # Update task_features_map as well
-         for task in task_features_map:
+         all_feature_cols = X_full.columns.tolist()
+         for task in list(task_features_map.keys()):
              task_features_map[task] = [f for f in task_features_map[task] if f in all_feature_cols]
-         print(f"Remaining unique features after dropping all-NaN columns: {len(all_feature_cols)}")
+             if not task_features_map[task]:
+                  logger.warning(f"Task '{task}' removed as it has no remaining valid features.")
+                  del task_features_map[task]
          if not all_feature_cols:
-              print("Error: No valid feature columns remaining after dropping all-NaN columns.")
+              logger.error("No valid feature columns remaining after dropping all-NaN columns.")
               sys.exit(1)
+         logger.info(f"Remaining unique features after dropping all-NaN columns: {len(all_feature_cols)}")
 
+    X_full = X_full.loc[y_full.index] # Align after potential row drops
 
-    # Final check on data size viability
-    min_patients_for_cv = config.N_SPLITS_CV # Need at least N_SPLITS_CV unique patients for StratifiedGroupKFold
-    if len(X_full) < 20 or groups_full.nunique() < min_patients_for_cv * 2 : # Need enough patients for train/test *and* inner CV
-        print(f"Error: Insufficient data after preparation. Rows={len(X_full)}, Unique Patients={groups_full.nunique()}. "
-              f"Need more data or patients for reliable splitting/CV (minimum {min_patients_for_cv*2} patients recommended for {config.N_SPLITS_CV}-fold CV and test split). Exiting.")
+    # 5. Final Checks
+    min_patients_for_cv = config.N_SPLITS_CV
+    if len(X_full) < 20 or groups_full.nunique() < min_patients_for_cv * 2 :
+        logger.error(f"Insufficient data after final preparation. Rows={len(X_full)}, Unique Patients={groups_full.nunique()}. "
+                     f"Need more data or patients for reliable splitting/CV (minimum {min_patients_for_cv*2} patients recommended for {config.N_SPLITS_CV}-fold CV).")
         sys.exit(1)
 
-    print(f"Final data shape prepared for modeling: X={X_full.shape}, y={len(y_full)}, Groups={groups_full.nunique()}")
+    if len(X_full) != len(y_full):
+        logger.error(f"Final length mismatch between X_full ({len(X_full)}) and y_full ({len(y_full)}).")
+        sys.exit(1)
+
+    logger.info(f"Final data shape prepared for modeling: X={X_full.shape}, y={len(y_full)}, Groups={groups_full.nunique()}")
 
     return X_full, y_full, groups_full, task_features_map, all_feature_cols

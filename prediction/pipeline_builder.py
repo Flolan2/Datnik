@@ -11,17 +11,10 @@ from sklearn.feature_selection import SelectKBest, f_classif, RFE
 from sklearn.linear_model import LogisticRegression # For RFE internal estimator
 from sklearn.base import clone
 
-# Use relative import if this file is inside the 'prediction' package
-try:
-    from . import config
-except ImportError:
-    # Fallback for potentially running this script directly or package issues
-    import config
-    print("Warning: Used direct import for 'config' in pipeline_builder.py")
-
 logger = logging.getLogger('DatnikExperiment') # Get logger instance
 
-def build_pipeline_from_config(exp_config, random_state):
+# Accepts config object passed from main script
+def build_pipeline_from_config(exp_config, random_state, config):
     """
     Builds a scikit-learn pipeline and parameter distribution/grid for tuning
     based on the provided experiment configuration dictionary.
@@ -29,6 +22,7 @@ def build_pipeline_from_config(exp_config, random_state):
     Args:
         exp_config (dict): A dictionary defining the experiment setup.
         random_state (int): Random state for reproducibility.
+        config (module): The main configuration module (config.py).
 
     Returns:
         tuple: (pipeline, search_params)
@@ -49,12 +43,13 @@ def build_pipeline_from_config(exp_config, random_state):
 
     # --- 2. Resampling ---
     resampler_strategy = exp_config.get('resampler')
+    # Use the passed config object to check availability and get classes
     if resampler_strategy == 'smote' and config.IMBLEARN_AVAILABLE and config.SMOTE is not None:
         smote_k = exp_config.get('resampler_smote_k', 4)
         pipeline_steps.append(('resampler', config.SMOTE(random_state=random_state, k_neighbors=smote_k)))
-        current_pipeline_class = config.ImbPipeline
+        current_pipeline_class = config.ImbPipeline # Use the passed config object
         logger.info("   -> Using SMOTE resampling (imblearn pipeline).")
-    elif resampler_strategy is not None and resampler_strategy == 'smote': # Only warn if specifically requested but unavailable
+    elif resampler_strategy is not None and resampler_strategy == 'smote':
         logger.warning(f"Resampler '{resampler_strategy}' requested, but imblearn not available. Skipping resampling.")
     elif resampler_strategy is not None:
          logger.warning(f"Unrecognized resampler strategy '{resampler_strategy}'. Skipping resampling.")
@@ -68,7 +63,7 @@ def build_pipeline_from_config(exp_config, random_state):
 
     # --- 4. Feature Selection ---
     selector_strategy = exp_config.get('feature_selector')
-    selector_k = exp_config.get('selector_k') # Get k if specified
+    selector_k = exp_config.get('selector_k')
 
     if selector_strategy == 'select_kbest':
         if selector_k and selector_k > 0:
@@ -78,11 +73,10 @@ def build_pipeline_from_config(exp_config, random_state):
             logger.warning("SelectKBest requested but 'selector_k' not specified or is <= 0. Skipping.")
     elif selector_strategy == 'rfe':
         if selector_k and selector_k > 0:
-            # Define a simple, relatively fast estimator for RFE ranking
             rfe_estimator = LogisticRegression(solver='liblinear', random_state=random_state, max_iter=500, class_weight='balanced')
             pipeline_steps.append((
                 'feature_selector',
-                RFE(estimator=rfe_estimator, n_features_to_select=selector_k, importance_getter='auto') # importance_getter='auto' handles coef_ or feature_importances_
+                RFE(estimator=rfe_estimator, n_features_to_select=selector_k, importance_getter='auto')
             ))
             logger.info(f"   -> Using RFE feature selection (k={selector_k}).")
         else:
@@ -90,30 +84,29 @@ def build_pipeline_from_config(exp_config, random_state):
     elif selector_strategy is not None:
         logger.warning(f"Unrecognized feature selector strategy '{selector_strategy}'. Skipping.")
 
-
     # --- 5. Classifier ---
     model_name = exp_config.get('model_name')
-    search_type = exp_config.get('search_type', 'random') # Default to random search if not specified
+    search_type = exp_config.get('search_type', 'random')
+    # Use the passed config object
     model_info = config.MODEL_PIPELINE_STEPS.get(model_name)
 
     if model_info:
         classifier = clone(model_info['estimator'])
         try: classifier.set_params(random_state=random_state)
-        except ValueError: pass # Ignore if model doesn't accept random_state
+        except ValueError: pass
 
         pipeline_steps.append(('classifier', classifier))
 
-        # Select grid or distribution based on search_type flag from config
         if search_type == 'grid':
-            search_params = model_info.get('param_grid') # Get grid if defined
-            if search_params is None: # Check if None or empty
+            search_params = model_info.get('param_grid')
+            if search_params is None:
                 logger.warning(f"GridSearch specified for {model_name} but no 'param_grid' found/defined in config. No tuning possible.")
-                search_params = {} # Ensure it's an empty dict
+                search_params = {}
             elif not isinstance(search_params, dict) or not search_params:
                  logger.warning(f"param_grid for {model_name} is not a non-empty dictionary. Tuning may fail or be skipped.")
-                 if search_params is None: search_params = {} # Ensure dict type
+                 if search_params is None: search_params = {}
         else: # Default to random search
-             search_params = model_info.get('param_dist') # Get distribution
+             search_params = model_info.get('param_dist')
              if search_params is None:
                  logger.warning(f"RandomSearch specified for {model_name} but no 'param_dist' found/defined in config. No tuning possible.")
                  search_params = {}
@@ -123,9 +116,8 @@ def build_pipeline_from_config(exp_config, random_state):
 
     else:
         logger.error(f"Model name '{model_name}' not found in config.MODEL_PIPELINE_STEPS.")
-        return current_pipeline_class([]), {} # Return empty pipeline and params
+        return current_pipeline_class([]), {}
 
-    # Build the final pipeline
     pipeline = current_pipeline_class(pipeline_steps)
     logger.debug(f"   Pipeline steps constructed: {[step[0] for step in pipeline.steps]}")
 

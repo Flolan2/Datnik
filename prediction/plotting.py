@@ -10,12 +10,14 @@ import numpy as np
 import pandas as pd
 import os
 
-try: from . import config
-except ImportError: import config; print("Warning: Used direct import for 'config' in plotting.py")
+# <<< MODIFIED: Removed internal config import >>>
+# try: from . import config
+# except ImportError: import config; print("Warning: Used direct import for 'config' in plotting.py")
 
 # --- Plotting Functions (Adapted) ---
 
-def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, base_filename):
+# <<< MODIFIED: Function signature accepts config object >>>
+def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, base_filename, config):
     """
     Generates box plots comparing a metric across configurations and tasks,
     creating separate plots for each splitting mode found in the DataFrame.
@@ -25,6 +27,7 @@ def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, bas
         metric_key (str): The metric column name suffix (e.g., 'roc_auc').
         base_title (str): Base plot title (mode name will be added).
         base_filename (str): Base path to save plots (mode name and '.png' will be added).
+        config (module): The main configuration module (e.g., config or config_multiclass).
     """
     mean_col = f'{metric_key}_mean'
     mode_col = 'Mode' # Expects this column name
@@ -66,14 +69,15 @@ def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, bas
         # Add mode to filename
         filename = base_filename.replace(".png", f"_{mode}.png")
         try:
+            # <<< MODIFIED: Use the passed config object >>>
             os.makedirs(os.path.dirname(filename), exist_ok=True) # Ensure directory exists
             plt.savefig(filename, dpi=300, bbox_inches='tight')
             print(f"Metric distribution plot for mode '{mode}' saved to: {filename}")
         except Exception as e: print(f"Error saving metric distribution plot {filename}: {e}")
         finally: plt.close()
 
-
-def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_tasks_to_plot, title, filename):
+# <<< MODIFIED: Function signature accepts config object >>>
+def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_tasks_to_plot, title, filename, config):
     """
     Plots average ROC curves with variability for selected configurations and tasks FOR A SINGLE MODE.
     (Assumes input dictionaries 'all_runs_roc_data' and 'all_runs_metrics' are pre-filtered for one mode).
@@ -84,6 +88,7 @@ def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_task
         configs_tasks_to_plot (list): List of tuples (config_name, task_name) to include.
         title (str): Plot title (should include mode info).
         filename (str): Full path to save the plot.
+        config (module): The main configuration module (e.g., config or config_multiclass).
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=(8, 8))
@@ -141,14 +146,15 @@ def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_task
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     try:
+        # <<< MODIFIED: Use the passed config object (though filename already has path) >>>
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         print(f"Aggregated ROC curve plot saved to: {filename}")
     except Exception as e: print(f"Error saving ROC curve plot {filename}: {e}")
     finally: plt.close()
 
-
-def plot_aggregated_importances(importance_df, config_name, task_name, top_n, title, filename):
+# <<< MODIFIED: Function signature accepts config object >>>
+def plot_aggregated_importances(importance_df, config_name, task_name, top_n, title, filename, config):
     """
     Plots aggregated feature importances/coefficients with error bars FOR A SINGLE MODE/CONFIG/TASK.
     (Title and filename should include mode info, passed from the calling script).
@@ -160,8 +166,11 @@ def plot_aggregated_importances(importance_df, config_name, task_name, top_n, ti
         top_n (int): Number of top features to plot.
         title (str): Plot title (should include mode info).
         filename (str): Full path to save the plot.
+        config (module): The main configuration module (e.g., config or config_multiclass).
     """
     plt.style.use('seaborn-v0_8-whitegrid')
+    # <<< MODIFIED: Use the passed config object for top_n if desired, though argument takes precedence >>>
+    # top_n = config.PLOT_TOP_N_FEATURES # This would override the argument, maybe not desired
     if importance_df is None or importance_df.empty or top_n <= 0: return # Skip silently if no data
     if not {'Mean_Importance', 'Std_Importance'}.issubset(importance_df.columns): return # Skip silently
 
@@ -190,6 +199,7 @@ def plot_aggregated_importances(importance_df, config_name, task_name, top_n, ti
     plt.grid(axis='x', linestyle=':', alpha=0.7); plt.yticks(fontsize=9)
     sns.despine(left=True, bottom=False); plt.tight_layout()
     try:
+        # <<< MODIFIED: Use the passed config object (though filename already has path) >>>
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         print(f"Aggregated importances plot saved to: {filename}")

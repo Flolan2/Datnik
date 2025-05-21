@@ -9,15 +9,18 @@ import numpy as np
 import os
 import collections
 
-try: from . import config
-except ImportError: import config; print("Warning: Used direct import for 'config' in results_processor.py")
+# <<< MODIFIED: Removed internal config import >>>
+# try: from . import config
+# except ImportError: import config; print("Warning: Used direct import for 'config' in results_processor.py")
 
-def aggregate_metrics(all_runs_metrics):
+# <<< MODIFIED: Function signature accepts config object >>>
+def aggregate_metrics(all_runs_metrics, config):
     """
     Aggregates metrics across repetitions for each mode, configuration, and task.
 
     Args:
         all_runs_metrics (dict): Nested dict: mode -> config_name -> task_name -> list of metric dicts.
+        config (module): The main configuration module (e.g., config or config_multiclass).
 
     Returns:
         pd.DataFrame: A DataFrame summarizing the aggregated metrics, including a 'Mode' column.
@@ -91,6 +94,7 @@ def aggregate_metrics(all_runs_metrics):
                  sorted([col for col in summary_df.columns if col not in ['Mode','Config_Name','Task_Name','N_Valid_Runs']])
     summary_df = summary_df[cols_order]
 
+    # <<< MODIFIED: Use the passed config object >>>
     if config.SAVE_AGGREGATED_SUMMARY:
         os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
         # <<< MODIFIED: Update filename slightly >>>
@@ -102,14 +106,15 @@ def aggregate_metrics(all_runs_metrics):
 
     return summary_df
 
-
-def aggregate_importances(all_runs_importances, file_prefix="importance"):
+# <<< MODIFIED: Function signature accepts config object >>>
+def aggregate_importances(all_runs_importances, config, file_prefix="importance"):
     """
     Aggregates feature importances/coefficients across repetitions for each mode, config, task.
     Saves separate files per mode/config/task.
 
     Args:
         all_runs_importances (dict): Nested dict: mode -> config_name -> task_name -> list of pd.Series.
+        config (module): The main configuration module (e.g., config or config_multiclass).
         file_prefix (str): Prefix for the output CSV filenames.
 
     Returns:
@@ -155,6 +160,7 @@ def aggregate_importances(all_runs_importances, file_prefix="importance"):
                         # <<< MODIFIED: Store under mode >>>
                         aggregated_dfs[mode][config_name][task_name] = agg_imp
 
+                        # <<< MODIFIED: Use the passed config object >>>
                         if config.SAVE_AGGREGATED_IMPORTANCES:
                             os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
                             # <<< MODIFIED: Include mode in filename >>>
