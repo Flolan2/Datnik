@@ -176,3 +176,83 @@ def aggregate_importances(all_runs_importances, config, file_prefix="importance"
                     aggregated_dfs[mode][config_name][task_name] = pd.DataFrame()
 
     return aggregated_dfs
+
+def aggregate_rfe_features(all_runs_rfe_selected_features, config):
+    """
+    Aggregates the lists of RFE selected features across repetitions for each
+    mode, configuration, and task. Calculates the frequency of each feature's selection.
+
+    Args:
+        all_runs_rfe_selected_features (dict): Nested dict:
+            mode -> config_name -> task_name -> list of lists of selected feature names.
+        config (module): The main configuration module.
+
+    Returns:
+        dict: Nested dict: mode -> config_name -> task_name -> DataFrame
+              Each DataFrame has 'Feature' and 'Selection_Frequency' (0-1) and 'Selection_Count'.
+              Returns defaultdict structure.
+    """
+    print(f"\n===== Aggregating RFE Selected Features (Across Modes) =====")
+    aggregated_rfe_dfs = collections.defaultdict(lambda: collections.defaultdict(dict))
+
+    if not all_runs_rfe_selected_features:
+        print("Input 'all_runs_rfe_selected_features' dictionary is empty.")
+        return aggregated_rfe_dfs
+
+    for mode, mode_results in all_runs_rfe_selected_features.items():
+        print(f"\n--- Processing Mode: {mode.upper()} for RFE features ---")
+        if not mode_results:
+            print("  No configurations found for this mode.")
+            continue
+
+        for config_name, config_data in mode_results.items():
+            # Only process configs that likely used RFE (can be made more robust by checking exp_config)
+            if 'RFE' not in config_name.upper(): # Simple heuristic
+                # print(f"  Config: {config_name} - Skipping RFE aggregation (name doesn't suggest RFE).")
+                continue
+            
+            if not config_data:
+                 print(f"  Config: {config_name} - No tasks found with RFE selections.")
+                 continue
+
+            for task_name, lists_of_selected_features in config_data.items():
+                print(f"\n  Config: {config_name} / Task: {task_name.upper()} (Mode: {mode}) for RFE aggregation")
+                
+                if not lists_of_selected_features:
+                    print("    No RFE selection lists found for this task/config.")
+                    aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
+                    continue
+
+                n_runs_with_rfe_lists = len(lists_of_selected_features)
+                print(f"    Found {n_runs_with_rfe_lists} runs with RFE feature lists.")
+
+                if n_runs_with_rfe_lists == 0:
+                    aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
+                    continue
+                
+                # Flatten the list of lists and count occurrences
+                all_selected_features_flat = [feature for sublist in lists_of_selected_features for feature in sublist]
+                feature_counts = collections.Counter(all_selected_features_flat)
+
+                if not feature_counts:
+                    print("    No features were selected across any run.")
+                    aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
+                    continue
+
+                rfe_summary_df = pd.DataFrame(feature_counts.items(), columns=['Feature', 'Selection_Count'])
+                rfe_summary_df['Selection_Frequency'] = rfe_summary_df['Selection_Count'] / n_runs_with_rfe_lists
+                rfe_summary_df.sort_values(by='Selection_Frequency', ascending=False, inplace=True)
+                rfe_summary_df.reset_index(drop=True, inplace=True)
+
+                aggregated_rfe_dfs[mode][config_name][task_name] = rfe_summary_df
+                
+                if config.SAVE_AGGREGATED_IMPORTANCES: # Reuse this flag, or add a new one
+                    os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
+                    filename = os.path.join(config.DATA_OUTPUT_FOLDER, f"rfe_selection_frequency_{mode}_{config_name}_{task_name}.csv")
+                    try:
+                        rfe_summary_df.to_csv(filename, index=False, sep=';', decimal='.', float_format='%.6f')
+                        print(f"    -> Saved RFE selection frequency to: {filename}")
+                    except Exception as e:
+                        print(f"    Error saving RFE selection frequency for {mode}/{config_name}/{task_name}: {e}")
+            
+    return aggregated_rfe_dfs
