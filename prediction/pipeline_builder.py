@@ -73,7 +73,8 @@ def build_pipeline_from_config(exp_config, random_state, config):
             logger.warning("SelectKBest requested but 'selector_k' not specified or is <= 0. Skipping.")
     elif selector_strategy == 'rfe':
         if selector_k and selector_k > 0:
-            rfe_estimator = LogisticRegression(solver='liblinear', random_state=random_state, max_iter=500, class_weight='balanced')
+            # MODIFIED: Increased max_iter for RFE's internal estimator
+            rfe_estimator = LogisticRegression(solver='liblinear', random_state=random_state, max_iter=2000, class_weight='balanced')
             pipeline_steps.append((
                 'feature_selector',
                 RFE(estimator=rfe_estimator, n_features_to_select=selector_k, importance_getter='auto')
@@ -92,8 +93,14 @@ def build_pipeline_from_config(exp_config, random_state, config):
 
     if model_info:
         classifier = clone(model_info['estimator'])
-        try: classifier.set_params(random_state=random_state)
-        except ValueError: pass
+        # Set random_state if the estimator supports it
+        try: 
+            classifier.set_params(random_state=random_state)
+        except ValueError: 
+            # Some estimators might not have random_state, or it might be named differently
+            # or not applicable (like some scalers if they were the final step by mistake)
+            pass # Silently ignore if random_state cannot be set
+
 
         pipeline_steps.append(('classifier', classifier))
 

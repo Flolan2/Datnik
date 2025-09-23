@@ -71,6 +71,69 @@ def get_base_readable_name(raw_name, name_map=READABLE_KINEMATIC_NAMES):
     return name_map.get(base_name, base_name) # Lookup in map, fallback to base_name
 
 
+def plot_single_bivariate_scatter(
+    data: pd.DataFrame,
+    kinematic_col: str,
+    imaging_col: str,
+    stats_dict: dict,
+    ax: plt.Axes, # <<< THIS MUST BE PRESENT
+    title_prefix: str = "" # <<< THIS MUST BE PRESENT
+):
+    """
+    Creates a styled scatter plot on a given matplotlib Axes.
+    Args:
+        data (pd.DataFrame): DataFrame containing the two columns to plot.
+        kinematic_col (str): Name of the kinematic variable column.
+        imaging_col (str): Name of the imaging variable column.
+        stats_dict (dict): Dictionary containing statistics like 'r', 'p', 'q', 'N'.
+        ax (plt.Axes): The matplotlib Axes object to draw on.
+        title_prefix (str): Prefix for the plot title (e.g., "A) ").
+    """
+    sns.set_style("whitegrid") # Apply style within function if called standalone
+    point_color = sns.color_palette("pastel")[0] # Example color
+    reg_line_color = '#555555'
+    annotation_facecolor = 'whitesmoke'
+    annotation_edgecolor = 'grey'
+
+    readable_kinematic_name = get_readable_name(kinematic_col)
+    readable_imaging_name = get_readable_name(imaging_col) # Usually Contralateral Striatum Z-Score
+
+    plot_data_clean = data[[kinematic_col, imaging_col]].dropna()
+    if plot_data_clean.empty or len(plot_data_clean) < 3:
+        ax.text(0.5, 0.5, "Insufficient Data", ha='center', va='center', transform=ax.transAxes, fontsize=9)
+        ax.set_title(f"{title_prefix}{readable_kinematic_name}", fontsize=10, weight='bold')
+        return
+
+    ax.scatter(plot_data_clean[kinematic_col], plot_data_clean[imaging_col],
+               color=point_color, alpha=0.6, edgecolor='dimgray', linewidth=0.5, s=40) # Smaller points for multi-panel
+
+    try:
+        m, b = np.polyfit(plot_data_clean[kinematic_col], plot_data_clean[imaging_col], 1)
+        x_vals = np.array([plot_data_clean[kinematic_col].min(), plot_data_clean[kinematic_col].max()])
+        ax.plot(x_vals, m * x_vals + b, color=reg_line_color, linewidth=1.5, linestyle='--')
+    except Exception: # Broad except for plotting
+        pass # Silently skip regression line if it fails
+
+    r_val = stats_dict.get('r', np.nan)
+    p_val = stats_dict.get('p', np.nan)
+    q_val = stats_dict.get('q', np.nan)
+    n_val = stats_dict.get('N', 0)
+
+    p_str = f"p={p_val:.2g}" if pd.notna(p_val) and p_val >= 0.001 else ("p<0.001" if pd.notna(p_val) else "p=N/A")
+    q_str = f"q={q_val:.2g}" if pd.notna(q_val) and q_val >= 0.001 else ("q<0.001" if pd.notna(q_val) else "q=N/A")
+
+    annotation_text = (f"r={r_val:.2f}\n{p_str}\n{q_str}\nN={n_val}") # Compact
+    ax.text(0.05, 0.95, annotation_text, transform=ax.transAxes, fontsize=8, va='top', # Smaller font
+            bbox=dict(boxstyle='round,pad=0.3', facecolor=annotation_facecolor, edgecolor=annotation_edgecolor, alpha=0.7))
+    ax.margins(0.05)
+
+    ax.set_title(f"{title_prefix}{readable_kinematic_name}", fontsize=10, weight='bold') # Title is just the kinematic var
+    ax.set_xlabel(readable_kinematic_name, fontsize=9)
+    ax.set_ylabel(readable_imaging_name, fontsize=9) # Y-label only on first column
+    ax.tick_params(axis='both', which='major', labelsize=8)
+    sns.despine(ax=ax)
+
+
 # --------------------------------------------------------------------------
 # Function for Bivariate Task Comparison Plotting (Updated X-Labels)
 # --------------------------------------------------------------------------
@@ -168,7 +231,7 @@ def plot_task_comparison_scatter(
         plt.close(fig)
 
 # --------------------------------------------------------------------------
-# Function for PLS Results Plotting (Updated Y-axis Labels)
+# Function for PLS Results Plotting (Updated Y-axis Labels and R2 in Scores Plot)
 # --------------------------------------------------------------------------
 def plot_pls_results(
     pls_results_lv: dict,
@@ -178,7 +241,8 @@ def plot_pls_results(
     bsr_threshold: float = 2.0
 ):
     """
-    Generates PLS plots for a specific significant LV using BASE readable names on Y-axis.
+    Generates PLS plots for a specific significant LV using BASE readable names on Y-axis
+    for loadings, and includes R-squared in the scores plot.
     """
     sns.set_style("whitegrid")
     task = pls_results_lv.get('task', 'unknown_task')
@@ -190,36 +254,37 @@ def plot_pls_results(
 
     if kinematic_variables is None:
         print(f"Warning: Kinematic variable list missing for task {task}, LV{lv_index}. Cannot plot loadings.")
-        return
-
-    if x_loadings is not None and isinstance(x_loadings, pd.Series):
+        # Decide if you want to return or continue to scores plot if scores are available
+    elif x_loadings is not None and isinstance(x_loadings, pd.Series):
         try: # Reindex safely
-            x_loadings = x_loadings.reindex(kinematic_variables)
+            x_loadings = x_loadings.reindex(kinematic_variables) # Ensure it's indexed by the provided kinematic_variables
             if bootstrap_ratios is not None and isinstance(bootstrap_ratios, pd.Series):
-                 bootstrap_ratios = bootstrap_ratios.reindex(kinematic_variables)
+                 bootstrap_ratios = bootstrap_ratios.reindex(kinematic_variables) # Align BSRs too
             else:
-                 print(f"Note: Bootstrap ratios not available for task {task}, LV{lv_index}.")
+                 print(f"Note: Bootstrap ratios not available or not a Series for task {task}, LV{lv_index}.")
+                 # Create a NaN series if BSRs are missing, to avoid errors in color generation
                  bootstrap_ratios = pd.Series(np.nan, index=kinematic_variables)
         except Exception as e:
             print(f"Error reindexing loadings/BSR for task {task}, LV{lv_index}: {e}. Skipping loadings plot.")
-            x_loadings = None
+            x_loadings = None # Prevent further processing of loadings
 
-        if x_loadings is not None and len(kinematic_variables) == len(x_loadings):
+        if x_loadings is not None and not x_loadings.empty and len(kinematic_variables) == len(x_loadings):
             fig_load, ax_load = plt.subplots(figsize=(11, max(6, len(x_loadings) * 0.35)))
             try:
                 # Sort by loading value (direction) using raw names for indexing
+                # Ensure x_loadings is a Series for .values and .iloc
+                if not isinstance(x_loadings, pd.Series): x_loadings = pd.Series(x_loadings, index=kinematic_variables)
+                if not isinstance(bootstrap_ratios, pd.Series): bootstrap_ratios = pd.Series(bootstrap_ratios, index=kinematic_variables)
+
+
                 sorted_idx = np.argsort(x_loadings.values)
                 sorted_loadings = x_loadings.iloc[sorted_idx]
-                sorted_bsr = bootstrap_ratios.iloc[sorted_idx]
-                sorted_vars_raw = sorted_loadings.index.tolist() # Still raw names here
+                sorted_bsr = bootstrap_ratios.iloc[sorted_idx] # bootstrap_ratios should now be a Series
+                sorted_vars_raw = sorted_loadings.index.tolist()
 
-                # Create BASE Readable Labels for Y-axis
                 readable_y_labels = [get_base_readable_name(var) for var in sorted_vars_raw]
-
-                # Create colors based on BSR
                 colors = ['#d62728' if abs(bsr) >= bsr_threshold else '#7f7f7f' for bsr in sorted_bsr.fillna(0)]
 
-                # Plot using BASE Readable Labels
                 bars = ax_load.barh(readable_y_labels, sorted_loadings.values, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
 
                 ax_load.set_xlabel(f"X Loadings on LV{lv_index} (Kinematic Variables)", fontsize=12)
@@ -239,38 +304,53 @@ def plot_pls_results(
                 except Exception as e_save: print(f"  ERROR saving PLS loadings plot {loadings_path}: {type(e_save).__name__} - {e_save}")
             except Exception as e_plot: print(f"  ERROR during PLS loadings plot generation: {type(e_plot).__name__} - {e_plot}")
             finally: plt.close(fig_load)
+        elif x_loadings is None or x_loadings.empty :
+            print(f"  Skipping PLS loadings plot for task {task}, LV{lv_index}: x_loadings is None, empty or not a Series after processing.")
 
     # --- 2. Plot LV Scores ---
     x_scores = pls_results_lv.get('x_scores'); y_scores = pls_results_lv.get('y_scores')
     lv_correlation = pls_results_lv.get('correlation', np.nan); lv_p_value = pls_results_lv.get('p_value', np.nan)
-    n_samples = pls_results_lv.get('n_samples_pls', 'N/A')
+    n_samples = pls_results_lv.get('n_samples_pls', 'N/A') # Assuming 'n_samples_pls' is in the dict
 
     if x_scores is not None and y_scores is not None and isinstance(x_scores, np.ndarray) and isinstance(y_scores, np.ndarray):
         if len(x_scores) != len(y_scores):
-             print(f"Warning: Mismatch in length of X/Y scores. Skipping scores plot.")
-             return
+             print(f"Warning: Mismatch in length of X/Y scores for task {task}, LV{lv_index}. Skipping scores plot.")
+             return # Or decide to proceed if one is a scalar for some reason (unlikely for scores)
 
         fig_score, ax_score = plt.subplots(figsize=(7, 6))
         sns.despine(fig=fig_score)
         try:
             sns.scatterplot(x=x_scores, y=y_scores, alpha=0.7, edgecolor='dimgray', s=50, ax=ax_score)
-            # Regression line
             try:
                 valid_mask = np.isfinite(x_scores) & np.isfinite(y_scores)
-                if np.sum(valid_mask) >= 2 :
+                if np.sum(valid_mask) >= 2 : # Need at least 2 points for polyfit
                     x_plot = x_scores[valid_mask]; y_plot = y_scores[valid_mask]
                     m, b = np.polyfit(x_plot, y_plot, 1)
                     line_x = np.array([np.min(x_plot), np.max(x_plot)])
                     ax_score.plot(line_x, m*line_x + b, color='red', linewidth=2, linestyle='--')
-            except Exception as e_reg: print(f"Note: Could not plot regression line for PLS scores: {e_reg}")
+            except Exception as e_reg: print(f"Note: Could not plot regression line for PLS scores task {task}, LV{lv_index}: {e_reg}")
 
             ax_score.set_xlabel(f"X Scores (Kinematics LV{lv_index})", fontsize=12)
             ax_score.set_ylabel(f"Y Scores (Imaging LV{lv_index})", fontsize=12)
             ax_score.set_title(f"PLS Latent Variable Scores (LV{lv_index}) - Task {task.upper()}", fontsize=14, weight='bold')
             ax_score.grid(True, linestyle='--', alpha=0.6)
             ax_score.tick_params(axis='both', which='major', labelsize=10)
-            # Annotation
-            annotation_text = (f"r = {lv_correlation:.3f}\np = {lv_p_value:.4g}\nN = {n_samples}")
+
+            # --- MODIFICATION FOR R-SQUARED START ---
+            if pd.notna(lv_correlation):
+                r_squared = lv_correlation**2
+                r_squared_str = f"{r_squared:.3f}" # Format R-squared
+            else:
+                r_squared_str = "N/A"
+
+            # Updated Annotation text to include R-squared
+            # Using $R^2$ for a nice superscript 2
+            annotation_text = (f"r = {lv_correlation:.3f}\n"
+                               f"$R^2$ = {r_squared_str}\n"
+                               f"p = {lv_p_value:.4g}\n" # .4g for p-value to handle small values
+                               f"N = {n_samples}")
+            # --- MODIFICATION FOR R-SQUARED END ---
+
             ax_score.text(0.05, 0.95, annotation_text, transform=ax_score.transAxes, fontsize=11, va='top',
                           bbox=dict(boxstyle='round,pad=0.4', facecolor='whitesmoke', edgecolor='grey', alpha=0.8))
 
@@ -283,7 +363,9 @@ def plot_pls_results(
             except Exception as e_save: print(f"  ERROR saving PLS scores plot {scores_path}: {type(e_save).__name__} - {e_save}")
         except Exception as e_plot: print(f"  ERROR during PLS scores plot generation: {type(e_plot).__name__} - {e_plot}")
         finally: plt.close(fig_score)
-        
+    else:
+        print(f"  Skipping PLS scores plot for task {task}, LV{lv_index}: x_scores or y_scores are None or not ndarrays.")
+
         
 def plot_ridge_coefficients(
     ridge_results_task: dict,
@@ -652,88 +734,3 @@ def plot_elasticnet_coefficients_with_significance(
 
 # --- START OF ADDITION to datnik_plotting.py ---
 
-def plot_single_bivariate_scatter(
-    data: pd.DataFrame,
-    kinematic_col: str,
-    imaging_col: str,
-    stats_dict: dict,
-    output_folder: str = "Output/Plots",
-    file_name: str = "bivariate_scatter.png"
-):
-    """
-    Creates a styled scatter plot for a single kinematic variable vs. an imaging variable.
-
-    Args:
-        data (pd.DataFrame): DataFrame containing the two columns to plot.
-        kinematic_col (str): Name of the kinematic variable column.
-        imaging_col (str): Name of the imaging variable column.
-        stats_dict (dict): Dictionary containing statistics like 'r', 'p', 'q', 'N'.
-        output_folder (str): Folder path to save the plot.
-        file_name (str): Name for the output PNG file.
-    """
-    # --- Style setup ---
-    sns.set_style("whitegrid")
-    point_color = sns.color_palette("Set2")[0]
-    reg_line_color = '#555555'
-    annotation_facecolor = 'whitesmoke'
-    annotation_edgecolor = 'grey'
-
-    # --- Get Readable Names ---
-    readable_kinematic_name = get_readable_name(kinematic_col)
-    readable_imaging_name = get_readable_name(imaging_col)
-
-    os.makedirs(output_folder, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(7, 6)) # Single plot
-    sns.despine(fig=fig)
-
-    # --- Plot Data ---
-    plot_data_clean = data[[kinematic_col, imaging_col]].dropna() # Ensure no NaNs for plotting
-    if plot_data_clean.empty or len(plot_data_clean) < 3:
-        print(f"  Skipping plot {file_name}: Insufficient valid data points ({len(plot_data_clean)}).")
-        plt.close(fig)
-        return
-
-    ax.scatter(plot_data_clean[kinematic_col], plot_data_clean[imaging_col],
-               color=point_color, alpha=0.6, edgecolor='dimgray', linewidth=0.5, s=60)
-
-    # --- Add Regression Line ---
-    try:
-        m, b = np.polyfit(plot_data_clean[kinematic_col], plot_data_clean[imaging_col], 1)
-        x_vals = np.array([plot_data_clean[kinematic_col].min(), plot_data_clean[kinematic_col].max()])
-        ax.plot(x_vals, m * x_vals + b, color=reg_line_color, linewidth=2, linestyle='--')
-    except Exception as e:
-        print(f"  Note: Could not plot regression line for {kinematic_col}: {e}")
-
-    # --- Add Annotation ---
-    r_val = stats_dict.get('r', np.nan)
-    p_val = stats_dict.get('p', np.nan)
-    q_val = stats_dict.get('q', np.nan) # Get FDR q-value
-    n_val = stats_dict.get('N', 0)
-
-    # Format p and q values for display
-    p_str = f"p={p_val:.3g}" if pd.notna(p_val) and p_val >= 0.001 else ("p<0.001" if pd.notna(p_val) else "p=N/A")
-    q_str = f"q={q_val:.3g}" if pd.notna(q_val) and q_val >= 0.001 else ("q<0.001" if pd.notna(q_val) else "q=N/A")
-
-    annotation_text = (f"r = {r_val:.2f}\n{p_str}\n{q_str} (FDR)\nN = {n_val}")
-    ax.text(0.05, 0.95, annotation_text, transform=ax.transAxes, fontsize=10, va='top',
-            bbox=dict(boxstyle='round,pad=0.5', facecolor=annotation_facecolor, edgecolor=annotation_edgecolor, alpha=0.8))
-    ax.margins(0.05)
-
-    # --- Labels and Title ---
-    ax.set_title(f"{readable_kinematic_name}\nvs. {readable_imaging_name} (OFF State)", fontsize=13, weight='bold')
-    ax.set_xlabel(readable_kinematic_name, fontsize=11)
-    ax.set_ylabel(readable_imaging_name, fontsize=11)
-    ax.tick_params(axis='both', which='major', labelsize=10)
-
-    # --- Save Plot ---
-    output_path = os.path.join(output_folder, file_name)
-    try:
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        # print(f"  Saved bivariate plot to {output_path}") # Optional: Can make output verbose
-    except Exception as e:
-        print(f"  Error saving bivariate plot {output_path}: {e}")
-    finally:
-        plt.close(fig)
-
-# --- END OF ADDITION to datnik_plotting.py ---

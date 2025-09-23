@@ -70,7 +70,7 @@ def run_pls_pipeline(
     n_permutations = config.get('PLS_N_PERMUTATIONS', 1000)
     n_bootstraps = config.get('PLS_N_BOOTSTRAPS', 1000)
     alpha = config.get('PLS_ALPHA', 0.05)
-    bsr_threshold = config.get('PLS_BSR_THRESHOLD', 2.0) # Default threshold
+    bsr_threshold = config.get('PLS_BSR_THRESHOLD', 1.5) # Default threshold
     data_output_folder = config.get('data_output_folder', './Output/Data')
     plots_folder = config.get('plots_folder', './Output/Plots')
 
@@ -136,11 +136,17 @@ def run_pls_pipeline(
                     # --- Generate PLS Plots for this significant LV ---
                     if PLOT_AVAILABLE:
                         print(f"    Generating PLS plots for LV{lv_index}...")
+                        # Create a dictionary for plotting that includes necessary top-level info
+                        plot_data_for_lv = lv_data.copy() # lv_data is pls_results_task['lv_results'][lv_index]
+                        plot_data_for_lv['task'] = pls_results_task.get('task') # Pass the task prefix
+                        plot_data_for_lv['kinematic_variables'] = pls_results_task.get('kinematic_variables') # Pass the list of features
+                        plot_data_for_lv['n_samples_pls'] = pls_results_task.get('n_samples_pls') # Pass N samples
+                    
                         plot_pls_results(
-                             pls_results_lv=lv_data, # Pass the dict for the specific LV
-                             lv_index=lv_index, # Pass the 1-based index
+                             pls_results_lv=plot_data_for_lv, # Pass the augmented dictionary
+                             lv_index=lv_index,
                              output_folder=plots_folder,
-                             file_name_base="pls_results", # Will add _{task}_LV{index}.png
+                             file_name_base="pls_results",
                              bsr_threshold=bsr_threshold
                         )
 

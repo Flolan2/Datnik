@@ -8,251 +8,257 @@ import pandas as pd
 import numpy as np
 import os
 import collections
+import logging # Added for consistency if not already present
 
-# <<< MODIFIED: Removed internal config import >>>
-# try: from . import config
-# except ImportError: import config; print("Warning: Used direct import for 'config' in results_processor.py")
+logger = logging.getLogger('DatnikExperiment')
 
-# <<< MODIFIED: Function signature accepts config object >>>
-def aggregate_metrics(all_runs_metrics, config):
+
+def aggregate_metrics(all_runs_metrics, config, output_dir_override=None): # Added output_dir_override
     """
     Aggregates metrics across repetitions for each mode, configuration, and task.
 
     Args:
         all_runs_metrics (dict): Nested dict: mode -> config_name -> task_name -> list of metric dicts.
-        config (module): The main configuration module (e.g., config or config_multiclass).
-
-    Returns:
-        pd.DataFrame: A DataFrame summarizing the aggregated metrics, including a 'Mode' column.
-                      Returns None if input is empty or no valid results found.
+        config (module): The main configuration module.
+        output_dir_override (str, optional): If provided, save summary here instead of config.DATA_OUTPUT_FOLDER.
     """
-    print("\n===== Aggregating Performance Metrics (Across Modes) =====")
+    logger.info("\n===== Aggregating Performance Metrics (Across Modes) =====") # Changed from print to logger.info
     aggregated_summary = []
-    metric_keys_display = ['roc_auc', 'accuracy', 'f1_macro', 'precision_macro', 'recall_macro']
+    metric_keys_display = ['roc_auc', 'accuracy', 'f1_macro', 'precision_macro', 'recall_macro', 'best_cv_score'] # Added best_cv_score
 
     if not all_runs_metrics:
-        print("Input 'all_runs_metrics' dictionary is empty.")
+        logger.warning("Input 'all_runs_metrics' dictionary is empty for metric aggregation.") # Changed from print
         return None
 
-    # <<< ADDED: Outer loop for mode >>>
     for mode, mode_results in all_runs_metrics.items():
-        print(f"\n--- Processing Mode: {mode.upper()} ---")
+        logger.info(f"\n--- Processing Mode for Metrics: {mode.upper()} ---")
         if not mode_results:
-            print("No configurations found for this mode.")
+            logger.info("No configurations found for this mode in metric aggregation.")
             continue
 
         for config_name, config_results in mode_results.items():
             if not config_results:
-                print(f"  Config: {config_name} - No tasks found.")
-                continue
+                 logger.info(f"  Config: {config_name} - No tasks found for metric aggregation.")
+                 continue
 
             for task_name, task_runs_metrics in config_results.items():
                 valid_runs = [run for run in task_runs_metrics if isinstance(run, dict) and run]
-                valid_metrics_list = [
-                    {k: run.get(k) for k in metric_keys_display}
-                    for run in valid_runs if any(pd.notna(run.get(k)) for k in metric_keys_display)
-                ]
+                
+                # Ensure all metric_keys_display are present, defaulting to NaN if missing
+                valid_metrics_list = []
+                for run in valid_runs:
+                    metric_dict = {}
+                    has_any_metric = False
+                    for k_display in metric_keys_display:
+                        metric_dict[k_display] = run.get(k_display, np.nan)
+                        if pd.notna(metric_dict[k_display]):
+                            has_any_metric = True
+                    if has_any_metric: # Only add if at least one display metric is not NaN
+                        valid_metrics_list.append(metric_dict)
+
                 n_total_runs = len(task_runs_metrics)
-                n_valid_runs = len(valid_metrics_list)
+                n_valid_runs_with_any_metric = len(valid_metrics_list)
 
-                print(f"\n  Config: {config_name} / Task: {task_name.upper()} (Mode: {mode})")
-                print(f"  Total runs attempted: {n_total_runs}, Valid runs with metrics: {n_valid_runs}")
+                logger.info(f"\n  Config: {config_name} / Task: {task_name.upper()} (Mode: {mode}) for metrics")
+                logger.info(f"  Total runs attempted: {n_total_runs}, Valid runs with any displayable metrics: {n_valid_runs_with_any_metric}")
 
-                # <<< MODIFIED: Create base row with Mode >>>
                 row = {
-                    'Mode': mode, # Add mode identifier
+                    'Mode': mode,
                     'Config_Name': config_name,
                     'Task_Name': task_name,
-                    'N_Valid_Runs': int(n_valid_runs)
+                    'N_Valid_Runs_With_Metrics': int(n_valid_runs_with_any_metric) # Renamed for clarity
                 }
 
-                if n_valid_runs == 0:
-                    print("  No valid runs found for aggregation.")
+                if n_valid_runs_with_any_metric == 0:
+                    logger.info("  No valid runs with metrics found for aggregation.")
                     for key in metric_keys_display:
                         row[f'{key}_mean'] = np.nan; row[f'{key}_std'] = np.nan
                 else:
                     metrics_df = pd.DataFrame(valid_metrics_list)
-                    for mkey in metric_keys_display:
-                        if mkey not in metrics_df.columns: metrics_df[mkey] = np.nan
-                    means = metrics_df.mean(skipna=True); stds = metrics_df.std(skipna=True)
-                    print("  Mean +/- Std Dev:")
+                    # N_Valid_Runs_For_Metric can be calculated per metric if needed, but summary usually uses overall valid runs
+                    
+                    logger.info("  Mean +/- Std Dev:")
                     for key in metric_keys_display:
-                        mean_val = means.get(key, np.nan); std_val = stds.get(key, np.nan)
+                        # Calculate mean/std only if the column exists and has non-NaN values
+                        mean_val, std_val = np.nan, np.nan
+                        n_for_this_metric = 0
+                        if key in metrics_df.columns and metrics_df[key].notna().any():
+                            mean_val = metrics_df[key].mean(skipna=True)
+                            std_val = metrics_df[key].std(skipna=True)
+                            n_for_this_metric = metrics_df[key].notna().sum()
+                        
                         row[f'{key}_mean'] = mean_val; row[f'{key}_std'] = std_val
-                        if pd.notna(mean_val): print(f"    {key}: {mean_val:.4f} ± {std_val:.4f}" if pd.notna(std_val) else f"    {key}: {mean_val:.4f}")
-                        else: print(f"    {key}: N/A")
-
+                        row[f'{key}_N'] = int(n_for_this_metric) # Number of valid runs for this specific metric
+                        
+                        if pd.notna(mean_val): 
+                            logger.info(f"    {key}: {mean_val:.4f} ± {std_val:.4f} (N={n_for_this_metric})" if pd.notna(std_val) else f"    {key}: {mean_val:.4f} (N={n_for_this_metric})")
+                        else: 
+                            logger.info(f"    {key}: N/A (N={n_for_this_metric})")
                 aggregated_summary.append(row)
 
     if not aggregated_summary:
-        print("No valid results found across all modes to create summary DataFrame.")
+        logger.warning("No valid results found across all modes to create metrics summary DataFrame.")
         return None
 
     summary_df = pd.DataFrame(aggregated_summary)
-    # <<< MODIFIED: Add 'Mode' to column order >>>
-    cols_order = ['Mode', 'Config_Name', 'Task_Name', 'N_Valid_Runs'] + \
-                 sorted([col for col in summary_df.columns if col not in ['Mode','Config_Name','Task_Name','N_Valid_Runs']])
+    cols_order = ['Mode', 'Config_Name', 'Task_Name', 'N_Valid_Runs_With_Metrics'] + \
+                 sorted([col for col in summary_df.columns if col not in ['Mode','Config_Name','Task_Name','N_Valid_Runs_With_Metrics']])
     summary_df = summary_df[cols_order]
 
-    # <<< MODIFIED: Use the passed config object >>>
     if config.SAVE_AGGREGATED_SUMMARY:
-        os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
-        # <<< MODIFIED: Update filename slightly >>>
-        filename = os.path.join(config.DATA_OUTPUT_FOLDER, "experiment_metrics_summary_modes.csv")
+        # MODIFIED: Use output_dir_override if provided, else use config.DATA_OUTPUT_FOLDER
+        output_directory = output_dir_override if output_dir_override else config.DATA_OUTPUT_FOLDER
+        os.makedirs(output_directory, exist_ok=True)
+        
+        filename = os.path.join(output_directory, "experiment_metrics_summary_modes.csv")
         try:
             summary_df.to_csv(filename, index=False, sep=';', decimal='.', float_format='%.6f')
-            print(f"\nAggregated metrics summary saved to: {filename}")
-        except Exception as e: print(f"\nError saving aggregated metrics summary: {e}")
+            logger.info(f"\nAggregated metrics summary saved to: {filename}")
+        except Exception as e: 
+            logger.error(f"\nError saving aggregated metrics summary: {e}", exc_info=True)
 
     return summary_df
 
-# <<< MODIFIED: Function signature accepts config object >>>
-def aggregate_importances(all_runs_importances, config, file_prefix="importance"):
-    """
-    Aggregates feature importances/coefficients across repetitions for each mode, config, task.
-    Saves separate files per mode/config/task.
 
+def aggregate_importances(all_runs_importances, config, output_dir_override=None, file_prefix="importance"): # Added output_dir_override
+    """
+    Aggregates feature importances/coefficients.
     Args:
-        all_runs_importances (dict): Nested dict: mode -> config_name -> task_name -> list of pd.Series.
-        config (module): The main configuration module (e.g., config or config_multiclass).
-        file_prefix (str): Prefix for the output CSV filenames.
-
-    Returns:
-        dict: Nested dict: mode -> config_name -> task_name -> aggregated importance DataFrame.
-              Returns defaultdict structure.
+        output_dir_override (str, optional): If provided, save summary here.
     """
-    print(f"\n===== Aggregating Feature Importances ({file_prefix}, Across Modes) =====")
+    logger.info(f"\n===== Aggregating Feature Importances ({file_prefix}, Across Modes) =====")
     aggregated_dfs = collections.defaultdict(lambda: collections.defaultdict(dict))
 
     if not all_runs_importances:
-        print("Input 'all_runs_importances' dictionary is empty.")
+        logger.warning("Input 'all_runs_importances' dictionary is empty.")
         return aggregated_dfs
+    
+    output_directory = output_dir_override if output_dir_override else config.DATA_OUTPUT_FOLDER
 
-    # <<< ADDED: Outer loop for mode >>>
+
     for mode, mode_results in all_runs_importances.items():
-        print(f"\n--- Processing Mode: {mode.upper()} ---")
+        logger.info(f"\n--- Processing Importances for Mode: {mode.upper()} ---")
         if not mode_results:
-            print("No configurations found for this mode.")
+            logger.info("No configurations found for this mode.")
             continue
 
         for config_name, config_imps in mode_results.items():
             if not config_imps:
-                 print(f"  Config: {config_name} - No tasks found.")
+                 logger.info(f"  Config: {config_name} - No tasks found for importances.")
                  continue
 
             for task_name, task_runs_imps in config_imps.items():
                 valid_imps = [s for s in task_runs_imps if isinstance(s, pd.Series) and not s.empty]
                 n_valid = len(valid_imps)
 
-                print(f"\n  Config: {config_name} / Task: {task_name.upper()} (Mode: {mode})")
-                print(f"  Found {n_valid} valid importance/coefficient sets.")
+                logger.info(f"\n  Importances - Config: {config_name} / Task: {task_name.upper()} (Mode: {mode})")
+                logger.info(f"  Found {n_valid} valid importance/coefficient sets.")
 
                 if n_valid > 0:
                     try:
-                        imp_df = pd.concat(valid_imps, axis=1, join='outer', keys=range(n_valid))
+                        imp_df = pd.concat(valid_imps, axis=1, join='outer', keys=[f'run_{i}' for i in range(n_valid)]) # Use unique keys
                         agg_imp = pd.DataFrame({
                             'Mean_Importance': imp_df.mean(axis=1, skipna=True),
                             'Std_Importance': imp_df.std(axis=1, skipna=True),
-                            'N_Valid_Runs': imp_df.notna().sum(axis=1).astype(int)
+                            'N_Valid_Runs': imp_df.notna().sum(axis=1).astype(int) # How many runs this feature appeared in
                         }, index=imp_df.index)
+                        # Sort by absolute mean importance
                         agg_imp = agg_imp.reindex(agg_imp['Mean_Importance'].abs().sort_values(ascending=False, na_position='last').index)
 
-                        # <<< MODIFIED: Store under mode >>>
                         aggregated_dfs[mode][config_name][task_name] = agg_imp
 
-                        # <<< MODIFIED: Use the passed config object >>>
                         if config.SAVE_AGGREGATED_IMPORTANCES:
-                            os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
-                            # <<< MODIFIED: Include mode in filename >>>
-                            filename = os.path.join(config.DATA_OUTPUT_FOLDER, f"{file_prefix}_{mode}_{config_name}_{task_name}_agg.csv")
+                            os.makedirs(output_directory, exist_ok=True)
+                            # Ensure task_name is filename-safe
+                            safe_task_name = str(task_name).replace('/','_').replace('\\','_').replace(':','_')
+                            filename = os.path.join(output_directory, f"{file_prefix}_{mode}_{config_name}_{safe_task_name}_agg.csv")
                             agg_imp.to_csv(filename, sep=';', decimal='.', index_label='Feature', float_format='%.6f')
-                            print(f"    -> Saved aggregated importances to: {filename}")
+                            logger.info(f"    -> Saved aggregated importances to: {filename}")
 
                     except Exception as e:
-                        print(f"    Error aggregating/saving importances for {mode}/{config_name}/{task_name}: {e}")
+                        logger.error(f"    Error aggregating/saving importances for {mode}/{config_name}/{task_name}: {e}", exc_info=True)
                         aggregated_dfs[mode][config_name][task_name] = pd.DataFrame()
                 else:
-                    print("    No valid importance data to aggregate for this task.")
+                    logger.info("    No valid importance data to aggregate for this task/config/mode.")
                     aggregated_dfs[mode][config_name][task_name] = pd.DataFrame()
-
     return aggregated_dfs
 
-def aggregate_rfe_features(all_runs_rfe_selected_features, config):
-    """
-    Aggregates the lists of RFE selected features across repetitions for each
-    mode, configuration, and task. Calculates the frequency of each feature's selection.
 
+def aggregate_rfe_features(all_runs_rfe_selected_features, config, output_dir_override=None): # Added output_dir_override
+    """
+    Aggregates RFE selected features.
     Args:
-        all_runs_rfe_selected_features (dict): Nested dict:
-            mode -> config_name -> task_name -> list of lists of selected feature names.
-        config (module): The main configuration module.
-
-    Returns:
-        dict: Nested dict: mode -> config_name -> task_name -> DataFrame
-              Each DataFrame has 'Feature' and 'Selection_Frequency' (0-1) and 'Selection_Count'.
-              Returns defaultdict structure.
+        output_dir_override (str, optional): If provided, save summary here.
     """
-    print(f"\n===== Aggregating RFE Selected Features (Across Modes) =====")
+    logger.info(f"\n===== Aggregating RFE Selected Features (Across Modes) =====")
     aggregated_rfe_dfs = collections.defaultdict(lambda: collections.defaultdict(dict))
 
     if not all_runs_rfe_selected_features:
-        print("Input 'all_runs_rfe_selected_features' dictionary is empty.")
+        logger.warning("Input 'all_runs_rfe_selected_features' dictionary is empty.")
         return aggregated_rfe_dfs
 
+    output_directory = output_dir_override if output_dir_override else config.DATA_OUTPUT_FOLDER
+
     for mode, mode_results in all_runs_rfe_selected_features.items():
-        print(f"\n--- Processing Mode: {mode.upper()} for RFE features ---")
+        logger.info(f"\n--- Processing RFE Features for Mode: {mode.upper()} ---")
         if not mode_results:
-            print("  No configurations found for this mode.")
+            logger.info("  No configurations found for this mode.")
             continue
 
         for config_name, config_data in mode_results.items():
-            # Only process configs that likely used RFE (can be made more robust by checking exp_config)
-            if 'RFE' not in config_name.upper(): # Simple heuristic
-                # print(f"  Config: {config_name} - Skipping RFE aggregation (name doesn't suggest RFE).")
+            if 'RFE' not in config_name.upper(): # Heuristic to only process RFE configs
                 continue
             
             if not config_data:
-                 print(f"  Config: {config_name} - No tasks found with RFE selections.")
+                 logger.info(f"  Config: {config_name} - No tasks found with RFE selections.")
                  continue
 
             for task_name, lists_of_selected_features in config_data.items():
-                print(f"\n  Config: {config_name} / Task: {task_name.upper()} (Mode: {mode}) for RFE aggregation")
+                logger.info(f"\n  RFE - Config: {config_name} / Task: {task_name.upper()} (Mode: {mode})")
                 
-                if not lists_of_selected_features:
-                    print("    No RFE selection lists found for this task/config.")
+                if not lists_of_selected_features: # Ensure it's not None and not empty
+                    logger.info("    No RFE selection lists found for this task/config/mode.")
                     aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
                     continue
 
-                n_runs_with_rfe_lists = len(lists_of_selected_features)
-                print(f"    Found {n_runs_with_rfe_lists} runs with RFE feature lists.")
+                # Filter out any None entries just in case, though append logic should prevent this
+                valid_lists_of_features = [lst for lst in lists_of_selected_features if lst is not None]
+                if not valid_lists_of_features:
+                    logger.info("    No valid (non-None) RFE selection lists found after filtering.")
+                    aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
+                    continue
 
-                if n_runs_with_rfe_lists == 0:
+                n_runs_with_rfe_lists = len(valid_lists_of_features)
+                logger.info(f"    Found {n_runs_with_rfe_lists} valid runs with RFE feature lists.")
+
+                if n_runs_with_rfe_lists == 0: # Should be caught by above, but defensive
                     aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
                     continue
                 
-                # Flatten the list of lists and count occurrences
-                all_selected_features_flat = [feature for sublist in lists_of_selected_features for feature in sublist]
+                all_selected_features_flat = [feature for sublist in valid_lists_of_features for feature in sublist]
                 feature_counts = collections.Counter(all_selected_features_flat)
 
                 if not feature_counts:
-                    print("    No features were selected across any run.")
+                    logger.info("    No features were selected across any valid run.")
                     aggregated_rfe_dfs[mode][config_name][task_name] = pd.DataFrame(columns=['Feature', 'Selection_Count', 'Selection_Frequency'])
                     continue
 
                 rfe_summary_df = pd.DataFrame(feature_counts.items(), columns=['Feature', 'Selection_Count'])
                 rfe_summary_df['Selection_Frequency'] = rfe_summary_df['Selection_Count'] / n_runs_with_rfe_lists
-                rfe_summary_df.sort_values(by='Selection_Frequency', ascending=False, inplace=True)
+                rfe_summary_df.sort_values(by=['Selection_Frequency', 'Selection_Count', 'Feature'], ascending=[False, False, True], inplace=True)
                 rfe_summary_df.reset_index(drop=True, inplace=True)
 
                 aggregated_rfe_dfs[mode][config_name][task_name] = rfe_summary_df
                 
-                if config.SAVE_AGGREGATED_IMPORTANCES: # Reuse this flag, or add a new one
-                    os.makedirs(config.DATA_OUTPUT_FOLDER, exist_ok=True)
-                    filename = os.path.join(config.DATA_OUTPUT_FOLDER, f"rfe_selection_frequency_{mode}_{config_name}_{task_name}.csv")
+                # Reuse SAVE_AGGREGATED_IMPORTANCES flag, or add a specific one like SAVE_RFE_SUMMARY
+                if config.SAVE_AGGREGATED_IMPORTANCES: 
+                    os.makedirs(output_directory, exist_ok=True)
+                    safe_task_name = str(task_name).replace('/','_').replace('\\','_').replace(':','_')
+                    filename = os.path.join(output_directory, f"rfe_selection_frequency_{mode}_{config_name}_{safe_task_name}.csv")
                     try:
                         rfe_summary_df.to_csv(filename, index=False, sep=';', decimal='.', float_format='%.6f')
-                        print(f"    -> Saved RFE selection frequency to: {filename}")
+                        logger.info(f"    -> Saved RFE selection frequency to: {filename}")
                     except Exception as e:
-                        print(f"    Error saving RFE selection frequency for {mode}/{config_name}/{task_name}: {e}")
+                        logger.error(f"    Error saving RFE selection frequency for {mode}/{config_name}/{task_name}: {e}", exc_info=True)
             
     return aggregated_rfe_dfs
