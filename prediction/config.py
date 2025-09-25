@@ -1,8 +1,9 @@
+# --- START OF FILE prediction/config.py (FINAL) ---
 # -*- coding: utf-8 -*-
 """
 Configuration settings for the DatScan prediction experiments.
 PUBLICATION RUN: Focusing on best LR+RFE models with and without
-final engineered features for FT and HM tasks.
+final engineered features for FT and HM tasks. All analyses are age-controlled.
 """
 
 import os
@@ -15,35 +16,30 @@ from sklearn.ensemble import RandomForestClassifier # Keep for RFE estimator if 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) # This is /Users/Lange_L/Documents/Kinematik/Datnik/Online/prediction
 PREDICTION_DIR = SCRIPT_DIR
 ONLINE_DIR = os.path.dirname(PREDICTION_DIR)            # This is /Users/Lange_L/Documents/Kinematik/Datnik/Online
-DATNIK_DIR = os.path.dirname(ONLINE_DIR)                # This is /Users/Lange_L/Documents/Kinematik/Datnik
+PROJECT_ROOT_DIR = os.path.dirname(ONLINE_DIR)          # <<< RENAMED: This is /Users/Lange_L/Documents/Kinematik/Datnik
 print(f"[Config] Prediction script dir: {PREDICTION_DIR}")
 print(f"[Config] Detected parent 'Online' dir: {ONLINE_DIR}")
-print(f"[Config] Assuming 'Datnik' directory for Input/Output: {DATNIK_DIR}")
+print(f"[Config] Assuming project root directory: {PROJECT_ROOT_DIR}")
 
 # --- Input Data ---
-# Assuming your final preprocessed data is here:
-# INPUT_FOLDER = os.path.join(DATNIK_DIR, "Input") # Original line
-INPUT_FOLDER = os.path.join(DATNIK_DIR, "Output", "Data_Processed") # MODIFIED LINE
-# INPUT_CSV_NAME = "merged_summary_with_medon.csv" # Original line
-INPUT_CSV_NAME = "final_merged_data.csv" # MODIFIED LINE
-# Ensure INPUT_CSV_NAME contains TARGET_Z_SCORE_COL and GROUP_ID_COL
-
+INPUT_FOLDER = os.path.join(PROJECT_ROOT_DIR, "Output", "Data_Processed")
+INPUT_CSV_NAME = "final_merged_data.csv"
 
 # --- Output Folders for THIS prediction experiment ---
-PREDICTION_SUBFOLDER_NAME = "prediction_binary_PublicationRun_V1"
-OUTPUT_FOLDER_BASE = os.path.join(DATNIK_DIR, "Output")
+PREDICTION_SUBFOLDER_NAME = "prediction_binary_PublicationRun_V1_AgeControlled" # Added tag to folder name
+OUTPUT_FOLDER_BASE = os.path.join(PROJECT_ROOT_DIR, "Output")
 DATA_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Prediction_Results", PREDICTION_SUBFOLDER_NAME)
 PLOT_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Prediction_Plots", PREDICTION_SUBFOLDER_NAME)
 
 # --- Prediction Target (BINARY) ---
 TARGET_IMAGING_BASE = "Contralateral_Striatum"
 TARGET_Z_SCORE_COL = f"{TARGET_IMAGING_BASE}_Z"
-ABNORMALITY_THRESHOLD = -1.96
-TARGET_COLUMN_NAME = 'DatScan_Status'
+ABNORMALITY_THRESHOLD = -1.96 # This will be applied to AGE-CONTROLLED residuals
+TARGET_COLUMN_NAME = 'DatScan_Status_AgeControlled'
 
-# --- Grouping Variable ---
+# --- Grouping and Covariate Variables ---
 GROUP_ID_COL = "Patient ID"
-# HAND_PERFORMED_COL = "Hand_Performed" # Not directly used by current data_loader for feature selection logic
+AGE_COL = 'Age' # --- MODIFIED: Define the Age column for mandatory control ---
 
 # --- Features ---
 BASE_KINEMATIC_COLS = [
@@ -53,7 +49,6 @@ BASE_KINEMATIC_COLS = [
     "rate", "amplitudedecay", "velocitydecay", "ratedecay", "cvamplitude",
     "cvcycleduration", "cvspeed", "cvrmsvelocity", "cvopeningspeed", "cvclosingspeed"
 ]
-# TASKS_TO_RUN_SEPARATELY is now handled by 'task_prefix_for_features' in CONFIGURATIONS_TO_RUN
 
 # --- Splitting Mode Control ---
 SPLITTING_MODES_TO_RUN = ['group']
@@ -68,8 +63,6 @@ N_ITER_RANDOM_SEARCH = 30
 TUNING_SCORING_METRIC = 'roc_auc'
 
 # --- Feature Engineering Configuration ---
-# This defines the "Final_Optimized_V1" set.
-# It will be applied when a configuration specifies to use engineered features.
 FEATURE_ENGINEERING_SETS_OPTIMIZED = [
     # === FT: Highly Selected Engineered Features ===
     {
@@ -165,7 +158,6 @@ FEATURE_ENGINEERING_SETS_OPTIMIZED = [
         'params': {'col': 'hm_meancycleduration', 'degree': 2, 'new_col_prefix': 'hm_meancycleduration_poly'}
     },
 ]
-# We will control application of FE via a flag in CONFIGURATIONS_TO_RUN
 
 # --- Experiment Configurations (Model Pipelines) ---
 CONFIGURATIONS_TO_RUN = [
@@ -173,7 +165,7 @@ CONFIGURATIONS_TO_RUN = [
     {
         'config_name': 'LR_RFE15_FT_OriginalFeats', # Baseline for FT
         'model_name': 'logistic',
-        'apply_feature_engineering': False, # NEW FLAG: Use only original features
+        'apply_feature_engineering': False,
         'task_prefix_for_features': 'ft',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
         'feature_selector': 'rfe', 'selector_k': 15,
@@ -182,8 +174,8 @@ CONFIGURATIONS_TO_RUN = [
     {
         'config_name': 'LR_RFE15_FT_EngFeats_OptimizedV1', # With our best engineered set for FT
         'model_name': 'logistic',
-        'apply_feature_engineering': True,  # NEW FLAG: Use original + engineered features
-        'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED, # NEW: Point to the FE set
+        'apply_feature_engineering': True,
+        'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED,
         'task_prefix_for_features': 'ft',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
         'feature_selector': 'rfe', 'selector_k': 15,
@@ -194,7 +186,7 @@ CONFIGURATIONS_TO_RUN = [
     {
         'config_name': 'LR_RFE15_HM_OriginalFeats', # Baseline for HM
         'model_name': 'logistic',
-        'apply_feature_engineering': False, # Use only original features
+        'apply_feature_engineering': False,
         'task_prefix_for_features': 'hm',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
         'feature_selector': 'rfe', 'selector_k': 15,
@@ -210,7 +202,6 @@ CONFIGURATIONS_TO_RUN = [
         'feature_selector': 'rfe', 'selector_k': 15,
         'search_type': 'random'
     },
-    # Optional: Include the "all features" LR model for HM with EngFeats if it was a strong contender
     {
         'config_name': 'LR_AllFeats_HM_EngFeats_OptimizedV1',
         'model_name': 'logistic',
@@ -218,13 +209,12 @@ CONFIGURATIONS_TO_RUN = [
         'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED,
         'task_prefix_for_features': 'hm',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
-        'feature_selector': None, 'selector_k': None, # No RFE
+        'feature_selector': None, 'selector_k': None,
         'search_type': 'random'
     },
 ]
 
 # --- Model Definitions and Hyperparameter Spaces ---
-# (Keep these the same as your last successful run)
 MODEL_PIPELINE_STEPS = {
     'logistic': {
         'estimator': LogisticRegression(random_state=None, class_weight='balanced', max_iter=2000, solver='liblinear'),
@@ -233,7 +223,7 @@ MODEL_PIPELINE_STEPS = {
             'classifier__penalty': ['l1', 'l2']
         },
     },
-    'random_forest': { # Kept in case needed by RFE's default estimator if changed, or for other configs
+    'random_forest': {
         'estimator': RandomForestClassifier(random_state=None, class_weight='balanced', n_jobs=-1),
         'param_dist': {
              'classifier__n_estimators': randint(50, 400),
@@ -253,7 +243,7 @@ SAVE_AGGREGATED_SUMMARY = True
 SAVE_AGGREGATED_IMPORTANCES = True
 SAVE_META_MODEL_COEFFICIENTS = False
 GENERATE_PLOTS = True
-PLOT_TOP_N_FEATURES = 15 # RFE models will only have 15 features anyway
+PLOT_TOP_N_FEATURES = 15
 
 # --- Imblearn Check ---
 try:
@@ -266,4 +256,5 @@ except ImportError:
     RESAMPLER_OPTIONS = {}
     print("[Config] Warning: 'imbalanced-learn' not found. Resampling options unavailable.")
 
-print("[Config] PUBLICATION RUN Configuration loaded.")
+print("[Config] PUBLICATION RUN (AGE-CONTROLLED) Configuration loaded.")
+# --- END OF FILE prediction/config.py (FINAL) ---

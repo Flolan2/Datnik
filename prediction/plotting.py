@@ -10,13 +10,8 @@ import numpy as np
 import pandas as pd
 import os
 
-# <<< MODIFIED: Removed internal config import >>>
-# try: from . import config
-# except ImportError: import config; print("Warning: Used direct import for 'config' in plotting.py")
-
 # --- Plotting Functions (Adapted) ---
 
-# <<< MODIFIED: Function signature accepts config object >>>
 def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, base_filename, config):
     """
     Generates box plots comparing a metric across configurations and tasks,
@@ -69,14 +64,12 @@ def plot_metric_distributions(aggregated_metrics_df, metric_key, base_title, bas
         # Add mode to filename
         filename = base_filename.replace(".png", f"_{mode}.png")
         try:
-            # <<< MODIFIED: Use the passed config object >>>
             os.makedirs(os.path.dirname(filename), exist_ok=True) # Ensure directory exists
             plt.savefig(filename, dpi=300, bbox_inches='tight')
             print(f"Metric distribution plot for mode '{mode}' saved to: {filename}")
         except Exception as e: print(f"Error saving metric distribution plot {filename}: {e}")
         finally: plt.close()
 
-# <<< MODIFIED: Function signature accepts config object >>>
 def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_tasks_to_plot, title, filename, config):
     """
     Plots average ROC curves with variability for selected configurations and tasks FOR A SINGLE MODE.
@@ -146,14 +139,12 @@ def plot_aggregated_roc_curves(all_runs_roc_data, all_runs_metrics, configs_task
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     try:
-        # <<< MODIFIED: Use the passed config object (though filename already has path) >>>
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         print(f"Aggregated ROC curve plot saved to: {filename}")
     except Exception as e: print(f"Error saving ROC curve plot {filename}: {e}")
     finally: plt.close()
 
-# <<< MODIFIED: Function signature accepts config object >>>
 def plot_aggregated_importances(importance_df, config_name, task_name, top_n, title, filename, config):
     """
     Plots aggregated feature importances/coefficients with error bars FOR A SINGLE MODE/CONFIG/TASK.
@@ -169,8 +160,6 @@ def plot_aggregated_importances(importance_df, config_name, task_name, top_n, ti
         config (module): The main configuration module (e.g., config or config_multiclass).
     """
     plt.style.use('seaborn-v0_8-whitegrid')
-    # <<< MODIFIED: Use the passed config object for top_n if desired, though argument takes precedence >>>
-    # top_n = config.PLOT_TOP_N_FEATURES # This would override the argument, maybe not desired
     if importance_df is None or importance_df.empty or top_n <= 0: return # Skip silently if no data
     if not {'Mean_Importance', 'Std_Importance'}.issubset(importance_df.columns): return # Skip silently
 
@@ -199,9 +188,73 @@ def plot_aggregated_importances(importance_df, config_name, task_name, top_n, ti
     plt.grid(axis='x', linestyle=':', alpha=0.7); plt.yticks(fontsize=9)
     sns.despine(left=True, bottom=False); plt.tight_layout()
     try:
-        # <<< MODIFIED: Use the passed config object (though filename already has path) >>>
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         print(f"Aggregated importances plot saved to: {filename}")
     except Exception as e: print(f"Error saving importances plot {filename}: {e}")
     finally: plt.close()
+
+# <<< NEW FUNCTION ADDED FOR THRESHOLD SWEEP PLOTTING >>>
+def plot_performance_vs_threshold(summary_df, x_col, y_col, filename, config):
+    """
+    Generates a line plot showing a performance metric vs. a changing threshold.
+    Includes a shaded region for standard deviation.
+
+    Args:
+        summary_df (pd.DataFrame): DataFrame with experiment results.
+        x_col (str): Column name for the x-axis (e.g., 'Threshold_Value').
+        y_col (str): Column name for the y-axis (e.g., 'Mean_ROC_AUC').
+        filename (str): Full path to save the plot.
+        config (module): The main configuration module.
+    """
+    std_col = y_col.replace('Mean_', 'Std_')
+    if not {x_col, y_col, std_col, 'Config_Name'}.issubset(summary_df.columns):
+        print(f"Warning: Required columns for threshold plot not found. Skipping plot '{filename}'.")
+        return
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.figure(figsize=(10, 6))
+
+    configs = summary_df['Config_Name'].unique()
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(configs)))
+
+    for i, cfg_name in enumerate(configs):
+        df_cfg = summary_df[summary_df['Config_Name'] == cfg_name].copy()
+        df_cfg = df_cfg.sort_values(by=x_col).dropna(subset=[x_col, y_col, std_col])
+
+        if df_cfg.empty:
+            continue
+
+        x = df_cfg[x_col]
+        y_mean = df_cfg[y_col]
+        y_std = df_cfg[std_col]
+
+        # Plot the mean performance line
+        plt.plot(x, y_mean, marker='o', linestyle='-', label=cfg_name, color=colors[i])
+
+        # Add the shaded standard deviation area
+        plt.fill_between(x, y_mean - y_std, y_mean + y_std, color=colors[i], alpha=0.2)
+
+    plt.axhline(y=0.5, color='black', linestyle='--', label='Chance (AUC = 0.50)')
+
+    # Formatting the plot
+    plt.title('Model Performance vs. DaTscan Abnormality Threshold', fontsize=16, weight='bold')
+    plt.xlabel('Z-Score Threshold', fontsize=12)
+    plt.ylabel('Mean ROC AUC', fontsize=12)
+    plt.legend(title='Model Configuration')
+    plt.grid(True, which='both', linestyle=':', linewidth='0.5')
+    
+    # Invert x-axis because more negative Z-scores are "more abnormal"
+    plt.gca().invert_xaxis()
+    
+    sns.despine()
+    plt.tight_layout()
+
+    try:
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Performance vs. Threshold plot saved to: {filename}")
+    except Exception as e:
+        print(f"Error saving performance vs. threshold plot {filename}: {e}")
+    finally:
+        plt.close()
