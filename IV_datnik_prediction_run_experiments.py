@@ -235,8 +235,14 @@ for target_info in datscan_target_columns_to_process:
                         cfg_name = exp_conf['config_name']
                         task_pfx = exp_conf['task_prefix_for_features']
                         
-                        # Since we are only running one task, task_feat_map_orig is the list of columns we need.
-                        current_cols_cfg = task_feat_map_eng[task_pfx]
+                        # 1. Get the list of original base feature names from the config file.
+                        original_base_names = config.BASE_KINEMATIC_COLS
+                        
+                        # 2. Construct the full feature names for the current task (e.g., 'ft_meanamplitude').
+                        original_cols_for_task = [f"{task_pfx}_{base}" for base in original_base_names]
+                        
+                        # 3. Filter this list to ensure we only use columns that actually exist in our dataset.
+                        current_cols_cfg = [col for col in original_cols_for_task if col in X_train_val.columns]
                         
                         if not current_cols_cfg: 
                             results_data_metrics[target_col_name_key][target_col_type_key][thresh_val_key][split_mode][cfg_name].append({})

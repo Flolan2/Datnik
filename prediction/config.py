@@ -1,4 +1,4 @@
-# --- START OF FILE prediction/config.py (FINAL) ---
+# --- START OF FILE prediction/config.py (FINAL, WITH NEW FEATURES) ---
 # -*- coding: utf-8 -*-
 """
 Configuration settings for the DatScan prediction experiments.
@@ -26,15 +26,15 @@ INPUT_FOLDER = os.path.join(PROJECT_ROOT_DIR, "Output", "Data_Processed")
 INPUT_CSV_NAME = "final_merged_data.csv"
 
 # --- Output Folders for THIS prediction experiment ---
-PREDICTION_SUBFOLDER_NAME = "prediction_binary_PublicationRun_V1_AgeControlled" # Added tag to folder name
+PREDICTION_SUBFOLDER_NAME = "prediction_binary_PublicationRun_V2_AgeControlled_FE_Test" # Updated folder name for new test
 OUTPUT_FOLDER_BASE = os.path.join(PROJECT_ROOT_DIR, "Output")
 DATA_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Prediction_Results", PREDICTION_SUBFOLDER_NAME)
 PLOT_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Prediction_Plots", PREDICTION_SUBFOLDER_NAME)
 
 # --- Prediction Target (BINARY) ---
-TARGET_IMAGING_BASE = "Contralateral_Striatum"
+TARGET_IMAGING_BASE = "Contralateral_Putamen" # IMPORTANT: Matching the successful run
 TARGET_Z_SCORE_COL = f"{TARGET_IMAGING_BASE}_Z"
-ABNORMALITY_THRESHOLD = -1.96 # This will be applied to AGE-CONTROLLED residuals
+ABNORMALITY_THRESHOLD = -1.90 # IMPORTANT: Set to the optimal threshold found previously
 TARGET_COLUMN_NAME = 'DatScan_Status_AgeControlled'
 
 # --- Grouping and Covariate Variables ---
@@ -64,17 +64,41 @@ TUNING_SCORING_METRIC = 'roc_auc'
 
 # --- Feature Engineering Configuration ---
 FEATURE_ENGINEERING_SETS_OPTIMIZED = [
-    # === FT: Highly Selected Engineered Features ===
+    # === NEW HYPOTHESES TO TEST (BASED ON PREVIOUS RFE RESULTS) ===
+    {
+        'name': 'ft_inter_composite_variability',
+        'function': 'create_interaction_terms',
+        'params': {
+            'col1': 'ft_cvamplitude',
+            'col2': 'ft_cvrmsvelocity',
+            'new_col_name': 'ft_inter_composite_variability'
+        }
+    },
+    {
+        'name': 'ft_ratio_slowness_adjusted_decay',
+        'function': 'create_ratios',
+        'params': {
+            'num_col': 'ft_ratedecay',
+            'den_col': 'ft_meancycleduration',
+            'new_col_name': 'ft_ratio_slowness_adjusted_decay'
+        }
+    },
+    {
+        'name': 'ft_log_meancycleduration_from_suggestion', # Renamed to avoid clash
+        'function': 'create_log_transform',
+        'params': {
+            'col': 'ft_meancycleduration',
+            'new_col_name': 'ft_log_meancycleduration'
+        }
+    },
+
+    # === FT: Previously Selected Engineered Features ===
     {
         'name': 'ft_meancycleduration_poly',
         'function': 'create_polynomial_features',
         'params': {'col': 'ft_meancycleduration', 'degree': 3, 'new_col_prefix': 'ft_meancycleduration_poly'}
     },
-    {
-        'name': 'ft_log_meancycleduration',
-        'function': 'create_log_transform',
-        'params': {'col': 'ft_meancycleduration', 'new_col_name': 'ft_log_meancycleduration'}
-    },
+    # {'name': 'ft_log_meancycleduration', 'function': 'create_log_transform', 'params': {'col': 'ft_meancycleduration', 'new_col_name': 'ft_log_meancycleduration'}}, # This is a duplicate of our new one
     {
         'name': 'ft_cvamplitude_sq',
         'function': 'create_polynomial_features',
@@ -107,6 +131,7 @@ FEATURE_ENGINEERING_SETS_OPTIMIZED = [
     },
 
     # === HM: Highly Selected Engineered Features ===
+    # (These can remain, they won't affect the FT-only run)
     {
         'name': 'hm_stdopeningspeed_poly',
         'function': 'create_polynomial_features',
@@ -165,51 +190,20 @@ CONFIGURATIONS_TO_RUN = [
     {
         'config_name': 'LR_RFE15_FT_OriginalFeats', # Baseline for FT
         'model_name': 'logistic',
-        'apply_feature_engineering': False,
+        'apply_feature_engineering': False, # This is our control group
         'task_prefix_for_features': 'ft',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
         'feature_selector': 'rfe', 'selector_k': 15,
         'search_type': 'random'
     },
     {
-        'config_name': 'LR_RFE15_FT_EngFeats_OptimizedV1', # With our best engineered set for FT
+        'config_name': 'LR_RFE15_FT_EngFeats_OptimizedV2', # This is our experimental group
         'model_name': 'logistic',
         'apply_feature_engineering': True,
         'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED,
         'task_prefix_for_features': 'ft',
         'scaler': 'standard', 'imputer': 'median', 'resampler': None,
         'feature_selector': 'rfe', 'selector_k': 15,
-        'search_type': 'random'
-    },
-
-    # --- HM Task ---
-    {
-        'config_name': 'LR_RFE15_HM_OriginalFeats', # Baseline for HM
-        'model_name': 'logistic',
-        'apply_feature_engineering': False,
-        'task_prefix_for_features': 'hm',
-        'scaler': 'standard', 'imputer': 'median', 'resampler': None,
-        'feature_selector': 'rfe', 'selector_k': 15,
-        'search_type': 'random'
-    },
-    {
-        'config_name': 'LR_RFE15_HM_EngFeats_OptimizedV1', # With our best engineered set for HM
-        'model_name': 'logistic',
-        'apply_feature_engineering': True,
-        'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED,
-        'task_prefix_for_features': 'hm',
-        'scaler': 'standard', 'imputer': 'median', 'resampler': None,
-        'feature_selector': 'rfe', 'selector_k': 15,
-        'search_type': 'random'
-    },
-    {
-        'config_name': 'LR_AllFeats_HM_EngFeats_OptimizedV1',
-        'model_name': 'logistic',
-        'apply_feature_engineering': True,
-        'feature_engineering_definitions': FEATURE_ENGINEERING_SETS_OPTIMIZED,
-        'task_prefix_for_features': 'hm',
-        'scaler': 'standard', 'imputer': 'median', 'resampler': None,
-        'feature_selector': None, 'selector_k': None,
         'search_type': 'random'
     },
 ]
@@ -257,4 +251,4 @@ except ImportError:
     print("[Config] Warning: 'imbalanced-learn' not found. Resampling options unavailable.")
 
 print("[Config] PUBLICATION RUN (AGE-CONTROLLED) Configuration loaded.")
-# --- END OF FILE prediction/config.py (FINAL) ---
+# --- END OF FILE prediction/config.py (FINAL, WITH NEW FEATURES) ---
