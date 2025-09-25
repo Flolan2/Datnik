@@ -152,6 +152,11 @@ logger.info(f"Kinematic task prefixes from active configs: {defined_task_prefixe
 # --- MAIN EXPERIMENT LOOP ---
 datscan_target_columns_to_process = [{"name": FOCUS_DATSCAN_REGIONS_TO_TEST[0], "type": "Z_SCORE"}]
 for target_info in datscan_target_columns_to_process:
+    results_data_metrics.clear()
+    results_data_roc.clear()
+    results_data_rfe.clear()
+    skipped_thresholds_info.clear()
+    
     target_col_name_key = target_info["name"]
     target_col_type_key = target_info["type"]
 
@@ -231,7 +236,7 @@ for target_info in datscan_target_columns_to_process:
                         task_pfx = exp_conf['task_prefix_for_features']
                         
                         # Since we are only running one task, task_feat_map_orig is the list of columns we need.
-                        current_cols_cfg = task_feat_map_orig # <-- THIS IS THE FIX
+                        current_cols_cfg = task_feat_map_eng[task_pfx]
                         
                         if not current_cols_cfg: 
                             results_data_metrics[target_col_name_key][target_col_type_key][thresh_val_key][split_mode][cfg_name].append({})
