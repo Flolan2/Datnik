@@ -1,4 +1,4 @@
-# --- START OF FILE prediction/data_loader.py (CORRECTED) ---
+# --- START OF FILE prediction/data_loader.py (CORRECTED AGAIN) ---
 # -*- coding: utf-8 -*-
 """
 Functions for loading and preparing the data FOR BINARY Classification.
@@ -96,9 +96,19 @@ def prepare_data(df, config,
     any_config_uses_fe = any(c.get('apply_feature_engineering') for c in config.CONFIGURATIONS_TO_RUN)
     if any_config_uses_fe:
         if fe is not None and hasattr(config, 'FEATURE_ENGINEERING_SETS_OPTIMIZED'):
-            fe_sets = config.FEATURE_ENGINEERING_SETS_OPTIMIZED
+            
+            # <<< MODIFICATION START: Filter FE sets to only those relevant to active tasks >>>
+            all_fe_sets = config.FEATURE_ENGINEERING_SETS_OPTIMIZED
+            relevant_fe_sets = [
+                fe_set for fe_set in all_fe_sets
+                if any(fe_set.get('name', '').startswith(prefix + '_') for prefix in defined_task_prefixes)
+            ]
+            logger.info(f"Identified {len(relevant_fe_sets)} relevant feature engineering definitions for active tasks: {defined_task_prefixes}")
+            # <<< MODIFICATION END >>>
+
             original_cols = X_full.columns.tolist()
-            for fe_set in fe_sets:
+            # Use the filtered list of definitions
+            for fe_set in relevant_fe_sets:
                 fe_func_name = fe_set.get('function')
                 fe_params = fe_set.get('params', {}).copy()
                 if not fe_func_name or not hasattr(fe, fe_func_name): continue
@@ -125,24 +135,13 @@ def prepare_data(df, config,
         logger.error(f"Missing essential columns for age control: {missing_req_cols}. Cannot proceed.")
         return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
 
-    # <<< --- OLD FAULTY LOGIC (FOR REFERENCE) --- >>>
-    # cols_for_residualization = required_cols + list(X_full.columns)
-    # analysis_df = data_full[list(set(cols_for_residualization))].dropna().copy()
-    # <<< --- END OLD FAULTY LOGIC --- >>>
-
-    # <<< --- NEW CORRECTED LOGIC --- >>>
     # 2. Correctly construct the dataframe for analysis by joining metadata with the fully-featured X_full
-    # Select metadata columns from the original dataframe
     metadata_df = data_full[required_cols]
-    
-    # Join metadata with the feature dataframe (which now includes engineered features)
-    # An inner join ensures we only have rows with complete data for both parts.
     temp_analysis_df = metadata_df.join(X_full, how='inner')
 
     # 3. Now, drop rows with any missing values across all columns needed for residualization
     analysis_df = temp_analysis_df.dropna().copy()
-    # <<< --- END NEW CORRECTED LOGIC --- >>>
-
+    
     if analysis_df.empty or analysis_df[config.AGE_COL].nunique() < 2:
         logger.warning("Not enough valid data (after dropping NaNs for Age, Target, and Features) to perform age control.")
         return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
@@ -184,4 +183,4 @@ def prepare_data(df, config,
         return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
 
     return X_full, y_full, groups_full, task_features_map, all_feature_cols
-# --- END OF FILE prediction/data_loader.py (CORRECTED) ---
+# --- END OF FILE prediction/data_loader.py (CORRECTED AGAIN) ---

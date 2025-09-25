@@ -206,6 +206,18 @@ CONFIGURATIONS_TO_RUN = [
         'feature_selector': 'rfe', 'selector_k': 15,
         'search_type': 'random'
     },
+    
+    # --- HM Task ---
+    {
+        'config_name': 'LR_RFE15_HM_OriginalFeats', # Baseline for HM
+        'model_name': 'logistic',
+        'apply_feature_engineering': False, # Control group using original features
+        'task_prefix_for_features': 'hm',
+        'scaler': 'standard', 'imputer': 'median', 'resampler': None,
+        'feature_selector': 'rfe', 'selector_k': 15,
+        'search_type': 'random'
+    },
+# ----------------------------------------
 ]
 
 # --- Model Definitions and Hyperparameter Spaces ---
