@@ -14,7 +14,11 @@ Utility functions for the prediction workflow.
 import numpy as np
 import pandas as pd
 import warnings
+import logging # Import logging
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.feature_selection import RFE, SelectKBest # Keep imports for clarity
+
+logger = logging.getLogger('DatnikExperiment') # Get logger instance
 
 def convert_numpy_types(obj):
     """Recursively converts NumPy types in a dictionary or list to native Python types for JSON serialization."""
@@ -56,39 +60,33 @@ def get_task_from_config_name(config_name_str):
         return "ft"
     elif "_HM_" in config_name_upper:
         return "hm"
-    # Add more task prefixes if you have them, e.g.:
-    # elif "_TASKX_" in config_name_upper:
-    #     return "taskx"
     else:
-        # Consider logging a warning here if you have a logger instance available
-        # Or if this function is critical and should always find a task
-        # For now, returning a default.
-        # print(f"Warning: Could not derive task from config_name: '{config_name_str}'. Returning 'unknown_task'.")
         return "unknown_task"
 
 
 def get_feature_importances(pipeline, feature_names_before_selection):
     """
     Extracts feature importances or coefficients from the final classifier in a pipeline.
-    If a known feature selector (RFE, SelectKBest) is the penultimate step,
-    it uses the selector's support to get the correct feature names.
+    If a feature selector is the penultimate step, it uses the selector's support
+    to get the correct feature names. THIS IS THE CORRECTED VERSION.
     """
     try:
-        final_classifier = pipeline.steps[-1][1] # Assumes classifier is the last step
-        
-        selected_feature_names = list(feature_names_before_selection) # Default to original names
+        final_classifier = pipeline.steps[-1][1]
+        selected_feature_names = list(feature_names_before_selection)
 
         if len(pipeline.steps) > 1:
-            potential_selector = pipeline.steps[-2][1] # Penultimate step
-            if isinstance(potential_selector, (RFE, SelectKBest)) and hasattr(potential_selector, 'get_support'):
-                # Ensure the selector has been fitted and has support_ attribute
-                if hasattr(potential_selector, 'support_'):
-                    support_mask = potential_selector.support_
-                    selected_feature_names = [name for i, name in enumerate(feature_names_before_selection) if support_mask[i]]
-                else:
-                    # This case implies the pipeline wasn't fully fit or selector is problematic
-                    # print("Warning: Selector step found but 'support_' attribute missing.")
-                    return None 
+            potential_selector = pipeline.steps[-2][1]
+            
+            # --- MODIFICATION START ---
+            # Use a more robust check based on behavior ("duck typing") instead of strict type.
+            # We check if the object has the methods/attributes we need.
+            if hasattr(potential_selector, 'get_support') and hasattr(potential_selector, 'support_'):
+            # --- MODIFICATION END ---
+                support_mask = potential_selector.get_support()
+                selected_feature_names = [name for i, name in enumerate(feature_names_before_selection) if support_mask[i]]
+                logger.debug(f"Selector found and applied. Filtered {len(feature_names_before_selection)} features down to {len(selected_feature_names)}.")
+            else:
+                logger.debug("No valid feature selector found or selector not fitted. Using original feature names.")
         
         importances_values = None
         if hasattr(final_classifier, 'coef_'):
@@ -96,24 +94,23 @@ def get_feature_importances(pipeline, feature_names_before_selection):
         elif hasattr(final_classifier, 'feature_importances_'):
             importances_values = final_classifier.feature_importances_
         else:
-            # print(f"Note: Final estimator {type(final_classifier).__name__} has no coef_ or feature_importances_.")
+            logger.warning(f"Final estimator {type(final_classifier).__name__} has no coef_ or feature_importances_.")
             return None
 
         if len(importances_values) == len(selected_feature_names):
             return pd.Series(importances_values, index=selected_feature_names)
         else:
-            # This is the error you were seeing.
-            # It means selected_feature_names doesn't match the number of importances from the classifier.
-            # This typically happens if feature_names_before_selection was not actually what the selector saw,
-            # or if the selector logic is flawed.
-            # Given your pipeline structure, feature_names_before_selection *should* be correct.
-            print(f"CRITICAL WARNING in get_feature_importances: Length of importance values ({len(importances_values)}) "
-                  f"does not match length of derived selected feature names ({len(selected_feature_names)}). "
-                  f"Original feature_names_before_selection length: {len(feature_names_before_selection)}. "
-                  f"Selected names (first 5): {selected_feature_names[:5]}")
+            # --- MODIFICATION START ---
+            # Replaced print() with logger.warning() for better error tracking.
+            logger.warning(
+                f"CRITICAL MISMATCH in get_feature_importances: "
+                f"Length of importance values ({len(importances_values)}) "
+                f"does not match length of derived feature names ({len(selected_feature_names)}). "
+                f"This should not happen with the corrected logic. Returning None."
+            )
+            # --- MODIFICATION END ---
             return None
 
     except Exception as e:
-        # The print statement in the main script's except block will handle this warning.
-        # print(f"Error in get_feature_importances: {e}")
-        return None # Or re-raise e if you want the main try-except to catch it fully
+        logger.error(f"Error in get_feature_importances: {e}", exc_info=True)
+        return None

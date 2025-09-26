@@ -1,4 +1,4 @@
-# --- START OF FILE IV_datnik_prediction_run_experiments.py (FINAL, COMPLETE, AND CORRECTED) ---
+# --- START OF FILE IV_datnik_prediction_run_experiments.py (WITH DEBUGGING FOR SUBPLOT C) ---
 # -*- coding: utf-8 -*-
 """
 Main script to run DatScan prediction experiments for BINARY classification.
@@ -90,7 +90,7 @@ except OSError as e_dir: print(f"FATAL: Error creating timestamped output subdir
 log_format = '%(asctime)s - %(levelname)s - [%(filename)s:%(funcName)s:%(lineno)d] - %(message)s'
 log_level = logging.INFO
 run_type_descriptor = "Run_Pub_FT_vs_HM_Directional_Fig3" # Updated descriptor
-log_filename_base = f"experiment_log_{run_type_descriptor}.log"
+log_filename_base = f"experiment_log_{run_type_descriptor}_DEBUG.log" # Added DEBUG to filename
 log_filename = os.path.join(run_output_data_folder, log_filename_base)
 summary_filename_prefix = f"summary_{run_type_descriptor}_"
 best_summary_filename_prefix = f"best_auc_summary_{run_type_descriptor}_"
@@ -264,11 +264,63 @@ if not final_summary_df.empty:
             scv_m.fit(X_tr_task, y_train_val, groups=groups_train_val)
             best_pipeline = scv_m.best_estimator_
             
+            ##### DEBUGGING START #####
+            logger.info(f"\n[DEBUG] --- Repetition {i_rep+1} for Coefficients ---")
+            logger.info(f"[DEBUG] Full pipeline object: {best_pipeline}")
+            
+            try:
+                # 1. Inspect the feature selector
+                selector = best_pipeline.named_steps.get('feature_selector')
+                if selector:
+                    num_selected = np.sum(selector.support_)
+                    logger.info(f"[DEBUG] RFE selector found. It selected {num_selected} features.")
+                else:
+                    logger.warning("[DEBUG] RFE selector step not found in pipeline.")
+
+                # 2. Inspect the classifier
+                classifier = best_pipeline.named_steps.get('classifier')
+                if classifier and hasattr(classifier, 'coef_'):
+                    num_coeffs = classifier.coef_.shape[1]
+                    logger.info(f"[DEBUG] Classifier found. It has {num_coeffs} coefficients.")
+                else:
+                    logger.warning("[DEBUG] Classifier or its coefficients not found.")
+                
+                # 3. Log the input columns
+                logger.info(f"[DEBUG] Number of columns passed to get_feature_importances: {len(X_tr_task.columns)}")
+                
+                # Check for mismatch
+                if 'num_selected' in locals() and 'num_coeffs' in locals() and num_selected != num_coeffs:
+                    logger.error(f"[DEBUG] CRITICAL MISMATCH: RFE selected {num_selected} features, but classifier has {num_coeffs} coefficients!")
+
+            except Exception as e_debug:
+                logger.error(f"[DEBUG] Error during pipeline inspection: {e_debug}")
+            
+            # 4. Get importances and log the result immediately
             importances = utils.get_feature_importances(best_pipeline, X_tr_task.columns)
+            logger.info(f"[DEBUG] Result from get_feature_importances: {importances}")
+            
+            # 5. Check if importances are valid before appending
             if importances is not None:
+                logger.info("[DEBUG] SUCCESS: Importances are NOT None. Appending to results.")
                 results_data_importances[cfg_name][task_pfx].append(importances)
+            else:
+                logger.warning("[DEBUG] FAILURE: get_feature_importances returned None. No data will be appended for this repetition. THIS IS THE CAUSE OF THE EMPTY PLOT.")
+            ##### DEBUGGING END #####
+
     except Exception as e_rerun:
         logger.error(f"Error during coefficient re-run. Panel C may be blank. Error: {e_rerun}")
+
+
+##### DEBUGGING START #####
+# Final check on the results dictionary before aggregation
+logger.info("\n[DEBUG] --- Final check before aggregating importances ---")
+if not results_data_importances:
+    logger.error("[DEBUG] CONFIRMED: `results_data_importances` dictionary is completely empty. Subplot C will be blank.")
+else:
+    logger.info(f"[DEBUG] `results_data_importances` contains data for keys: {list(results_data_importances.keys())}")
+    ft_data = results_data_importances.get('LR_RFE15_FT_OriginalFeats', {}).get('ft', [])
+    logger.info(f"[DEBUG] Found {len(ft_data)} sets of coefficients for the FT task.")
+##### DEBUGGING END #####
 
 aggregated_importances = results_processor.aggregate_importances(
     {'group': results_data_importances}, config, output_dir_override=run_output_data_folder
