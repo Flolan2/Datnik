@@ -1,9 +1,9 @@
-# --- START OF FILE prediction/data_loader.py (CORRECTED AGAIN) ---
+# --- START OF FILE prediction/data_loader.py (CORRECTED - KEYERROR FIXED) ---
 # -*- coding: utf-8 -*-
 """
 Functions for loading and preparing the data FOR BINARY Classification.
 Includes feature engineering capabilities based on global config.
-All data is controlled for Age before binarization and modeling.
+AGE CONTROL IS NO LONGER DONE HERE. It must be done inside the CV loop.
 """
 
 import pandas as pd
@@ -11,7 +11,6 @@ import numpy as np
 import os
 import sys
 import logging
-from statsmodels.formula.api import ols
 
 # Ensure feature_engineering module can be imported if FE is enabled
 try:
@@ -43,32 +42,34 @@ def load_data(input_folder, csv_name):
         logger.exception(f"Error loading or parsing data from {input_file_path}:")
         sys.exit(1)
 
-def prepare_data(df, config,
-                 target_z_score_column_override=None,
-                 abnormality_threshold_override=None):
+def prepare_data_pre_split(df, config, target_z_score_column_override=None):
     """
-    Prepares the dataframe for BINARY classification, controlling for Age.
-    It residualizes both kinematic features (X) and the continuous imaging
-    target (y) against Age before binarizing the target.
+    Prepares the dataframe BEFORE splitting for classification.
+    - Loads data
+    - Performs feature engineering
+    - Filters to necessary columns
+    - Returns RAW features (X), RAW continuous target (y), groups, and Age.
+    - DOES NOT perform age residualization to prevent data leakage.
 
     Args:
         df (pd.DataFrame): The raw input DataFrame.
         config (module): The main configuration module.
         target_z_score_column_override (str, optional): The DaTscan column to use.
-        abnormality_threshold_override (float, optional): The threshold for binarization.
+
     Returns:
-        tuple: X_full (residualized features), y_full (binary target from residuals),
-               groups_full, task_features_map, all_feature_cols.
+        tuple: X_full (features), y_continuous (continuous target),
+               groups_full, age_full, task_features_map, all_feature_cols.
     """
     current_target_z_col_name = target_z_score_column_override or config.TARGET_Z_SCORE_COL
-    current_threshold_to_use = abnormality_threshold_override if abnormality_threshold_override is not None else config.ABNORMALITY_THRESHOLD
-
     data_full = df.copy()
 
-    # --- Initial Data Cleaning and Feature Identification (as before) ---
-    if config.GROUP_ID_COL not in data_full.columns:
-        logger.error(f"Group ID column '{config.GROUP_ID_COL}' not found.")
-        return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
+    # --- Initial Data Cleaning and Feature Identification ---
+    required_cols = [config.GROUP_ID_COL, config.AGE_COL, current_target_z_col_name]
+    missing_req_cols = [c for c in required_cols if c not in data_full.columns]
+    if missing_req_cols:
+        logger.error(f"Missing essential columns for analysis: {missing_req_cols}. Cannot proceed.")
+        return pd.DataFrame(), pd.Series(dtype='float'), pd.Series(dtype='str'), pd.Series(dtype='float'), {}, []
+
     data_full[config.GROUP_ID_COL] = data_full[config.GROUP_ID_COL].astype(str).str.strip()
 
     defined_task_prefixes = sorted(list(set(
@@ -86,28 +87,24 @@ def prepare_data(df, config,
 
     all_initial_feature_cols = sorted(list(set(all_initial_feature_cols)))
     if not all_initial_feature_cols:
-        return pd.DataFrame(index=data_full.index), pd.Series(dtype='int'), data_full.get(config.GROUP_ID_COL), {}, []
+        return pd.DataFrame(index=data_full.index), pd.Series(dtype='int'), data_full.get(config.GROUP_ID_COL), data_full.get(config.AGE_COL), {}, []
 
     X_full = data_full[all_initial_feature_cols].copy()
     for col in X_full.columns:
         X_full[col] = pd.to_numeric(X_full[col].astype(str).str.replace(',', '.'), errors='coerce')
 
-    # --- Apply Feature Engineering (BEFORE residualization) ---
+    # --- Apply Feature Engineering ---
     any_config_uses_fe = any(c.get('apply_feature_engineering') for c in config.CONFIGURATIONS_TO_RUN)
     if any_config_uses_fe:
         if fe is not None and hasattr(config, 'FEATURE_ENGINEERING_SETS_OPTIMIZED'):
-            
-            # <<< MODIFICATION START: Filter FE sets to only those relevant to active tasks >>>
             all_fe_sets = config.FEATURE_ENGINEERING_SETS_OPTIMIZED
             relevant_fe_sets = [
                 fe_set for fe_set in all_fe_sets
                 if any(fe_set.get('name', '').startswith(prefix + '_') for prefix in defined_task_prefixes)
             ]
             logger.info(f"Identified {len(relevant_fe_sets)} relevant feature engineering definitions for active tasks: {defined_task_prefixes}")
-            # <<< MODIFICATION END >>>
 
             original_cols = X_full.columns.tolist()
-            # Use the filtered list of definitions
             for fe_set in relevant_fe_sets:
                 fe_func_name = fe_set.get('function')
                 fe_params = fe_set.get('params', {}).copy()
@@ -121,66 +118,32 @@ def prepare_data(df, config,
             all_engineered_cols = [c for c in X_full.columns if c not in original_cols]
             for prefix in defined_task_prefixes:
                 engineered_for_task = [c for c in all_engineered_cols if c.startswith(prefix + "_")]
-                if prefix in task_features_map: # Check key exists before extending
+                if prefix in task_features_map:
                     task_features_map[prefix].extend(engineered_for_task)
                     task_features_map[prefix] = sorted(list(set(task_features_map[prefix])))
 
-    # <<< --- AGE CONTROL LOGIC (WITH CORRECTION) START --- >>>
-    logger.debug(f"Applying mandatory age control using '{config.AGE_COL}' column...")
+    # --- Final Preparation (NO AGE CONTROL) ---
+    # --- CORRECTED SECTION START ---
+    # Combine the features (X_full, which contains original + engineered) with the metadata from data_full
+    # An inner join ensures that only rows present in both are kept, and indices are aligned.
+    temp_analysis_df = X_full.join(data_full[required_cols], how='inner')
 
-    # 1. Check for essential columns in the original dataframe
-    required_cols = [current_target_z_col_name, config.AGE_COL, config.GROUP_ID_COL]
-    missing_req_cols = [c for c in required_cols if c not in data_full.columns]
-    if missing_req_cols:
-        logger.error(f"Missing essential columns for age control: {missing_req_cols}. Cannot proceed.")
-        return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
-
-    # 2. Correctly construct the dataframe for analysis by joining metadata with the fully-featured X_full
-    metadata_df = data_full[required_cols]
-    temp_analysis_df = metadata_df.join(X_full, how='inner')
-
-    # 3. Now, drop rows with any missing values across all columns needed for residualization
+    # Now drop rows with any NaNs from the correctly combined dataframe
     analysis_df = temp_analysis_df.dropna().copy()
+    # --- CORRECTED SECTION END ---
+
+
+    X_full = analysis_df.drop(columns=required_cols, errors='ignore')
+    y_continuous = analysis_df[current_target_z_col_name]
+    groups_full = analysis_df[config.GROUP_ID_COL]
+    age_full = analysis_df[config.AGE_COL]
     
-    if analysis_df.empty or analysis_df[config.AGE_COL].nunique() < 2:
-        logger.warning("Not enough valid data (after dropping NaNs for Age, Target, and Features) to perform age control.")
-        return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
-
-    # 4. Control the CONTINUOUS imaging target first
-    y_model = ols(f"Q('{current_target_z_col_name}') ~ Q('{config.AGE_COL}')", data=analysis_df).fit()
-    y_continuous_resid = y_model.resid
-
-    # 5. Binarize the RESIDUALIZED target
-    y_full = (y_continuous_resid <= current_threshold_to_use).astype(int)
-    y_full.name = config.TARGET_COLUMN_NAME
-
-    # 6. Control all features (X)
-    X_resid_df = pd.DataFrame(index=analysis_df.index)
-    for col in X_full.columns:
-        if col in analysis_df.columns:
-            x_model = ols(f"Q('{col}') ~ Q('{config.AGE_COL}')", data=analysis_df).fit()
-            X_resid_df[col] = x_model.resid
-
-    X_full = X_resid_df
-    groups_full = analysis_df[config.GROUP_ID_COL].copy()
-    # <<< --- AGE CONTROL LOGIC END --- >>>
-
-    # --- Final Data Cleaning and Alignment ---
     all_feature_cols = list(X_full.columns)
-    cols_all_nan_in_X = X_full.columns[X_full.isnull().all()].tolist()
-    if cols_all_nan_in_X:
-         X_full.drop(columns=cols_all_nan_in_X, inplace=True)
-         all_feature_cols = X_full.columns.tolist()
-         for task_key in list(task_features_map.keys()):
-             task_features_map[task_key] = [f for f in task_features_map[task_key] if f in all_feature_cols]
-             if not task_features_map[task_key]: del task_features_map[task_key]
 
-    if X_full.empty:
-        return pd.DataFrame(index=y_full.index), y_full, groups_full, task_features_map, []
-
-    if not (len(X_full) == len(y_full) == len(groups_full)):
-        logger.error(f"CRITICAL FINAL LENGTH MISMATCH after age control. X:{len(X_full)}, y:{len(y_full)}, groups:{len(groups_full)}")
-        return pd.DataFrame(), pd.Series(dtype='int'), pd.Series(dtype='str'), {}, []
-
-    return X_full, y_full, groups_full, task_features_map, all_feature_cols
-# --- END OF FILE prediction/data_loader.py (CORRECTED AGAIN) ---
+    # Final sanity check on alignment
+    if not (len(X_full) == len(y_continuous) == len(groups_full) == len(age_full)):
+        logger.error(f"CRITICAL FINAL LENGTH MISMATCH after pre-split prep. X:{len(X_full)}, y:{len(y_continuous)}, groups:{len(groups_full)}, age:{len(age_full)}")
+        return pd.DataFrame(), pd.Series(dtype='float'), pd.Series(dtype='str'), pd.Series(dtype='float'), {}, []
+    
+    return X_full, y_continuous, groups_full, age_full, task_features_map, all_feature_cols
+# --- END OF FILE prediction/data_loader.py (CORRECTED - KEYERROR FIXED) ---

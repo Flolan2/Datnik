@@ -34,7 +34,7 @@ PLOT_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER_BASE, "Prediction_Plots", PREDIC
 # --- Prediction Target (BINARY) ---
 TARGET_IMAGING_BASE = "Contralateral_Putamen" # IMPORTANT: Matching the successful run
 TARGET_Z_SCORE_COL = f"{TARGET_IMAGING_BASE}_Z"
-ABNORMALITY_THRESHOLD = -1.90 # IMPORTANT: Set to the optimal threshold found previously
+ABNORMALITY_THRESHOLD = -1.96
 TARGET_COLUMN_NAME = 'DatScan_Status_AgeControlled'
 
 # --- Grouping and Covariate Variables ---
@@ -55,7 +55,7 @@ SPLITTING_MODES_TO_RUN = ['group']
 
 # --- Experiment Settings ---
 BASE_RANDOM_STATE = 42
-N_REPETITIONS = 30
+N_REPETITIONS = 100
 TEST_SET_SIZE = 0.25
 N_SPLITS_CV = 4
 ENABLE_TUNING = True
