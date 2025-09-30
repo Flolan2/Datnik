@@ -186,6 +186,7 @@ def load_dat_scan(input_folder):
     
     rename_dict_flexible = {
         "Patient ID": ["no.", "patient id", "patientid"],
+        "Sex": ["gender", "sex"],
         "Date of Scan": ["date of scan (dos)", "date of scan", "scandate"],
         "Striatum_Right_Z": ["striatum right: z-werte (new software)", "striatum right z", "r striatum z-score"],
         "Striatum_Left_Z":  ["striatum left: z-werte (new software)", "striatum left z", "l striatum z-score"],
@@ -248,7 +249,15 @@ def load_dat_scan(input_folder):
         if '_Z' in col or '_Raw' in col:
             if col in dat_scan_df.columns:
                 dat_scan_df[col] = pd.to_numeric(dat_scan_df[col].astype(str).str.replace(',', '.'), errors='coerce')
-                
+        # Convert numeric Sex/Gender (0/1) to categorical text
+    if 'Sex' in dat_scan_df.columns:
+        print("Info: Converting 'Sex' column from numeric (0/1) to categorical ('Female'/'Male').")
+        sex_map = {0: 'Female', 1: 'Male'}
+        # Ensure the column is numeric before mapping, handling potential string '0' or '1'
+        dat_scan_df['Sex'] = pd.to_numeric(dat_scan_df['Sex'], errors='coerce')
+        dat_scan_df['Sex'] = dat_scan_df['Sex'].map(sex_map)
+
+            
     print(f"Processed DatScan data. Final shape: {dat_scan_df.shape}, Kept columns after processing: {dat_scan_df.columns.tolist()}")
     return dat_scan_df
 
@@ -502,8 +511,8 @@ if __name__ == '__main__':
             cols_with_suffix_to_exclude = [col for col in final_df_to_save.columns if '_InfoSuffix' in col]
             cols_to_exclude.extend(cols_with_suffix_to_exclude)
             
-            # Add 'Age' to the ordered columns for final output
-            ordered_cols = ['Patient ID', 'Date of Visit', 'Medication Condition', 'Hand_Performed', 'Days Since First Visit', 'Age']
+            # Add 'Age' and 'Sex' to the ordered columns for final output
+            ordered_cols = ['Patient ID', 'Date of Visit', 'Medication Condition', 'Hand_Performed', 'Days Since First Visit', 'Age', 'Sex']
             
             ft_data_cols = sorted([c for c in final_df_to_save.columns if c.startswith('ft_') and c not in ordered_cols and c not in cols_to_exclude])
             ordered_cols.extend(ft_data_cols)

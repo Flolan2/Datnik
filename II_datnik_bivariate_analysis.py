@@ -92,6 +92,8 @@ elif CONTROL_FOR_AGE:
 else:
     print("\n[INFO] Age control is DISABLED. Running standard Pearson correlation.")
 
+
+
 # --- Setup ---
 base_kinematic_cols = [
     "meanamplitude", "stdamplitude", "meanspeed", "stdspeed", "meanrmsvelocity",
@@ -100,7 +102,7 @@ base_kinematic_cols = [
     "rate", "amplitudedecay", "velocitydecay", "ratedecay", "cvamplitude",
     "cvcycleduration", "cvspeed", "cvrmsvelocity", "cvopeningspeed", "cvclosingspeed"
 ]
-TARGET_IMAGING_BASE = "Contralateral_Striatum"
+TARGET_IMAGING_BASE = "Contralateral_Putamen"
 TARGET_IMAGING_COL = f"{TARGET_IMAGING_BASE}_Z"
 tasks = ['ft', 'hm']
 
@@ -109,6 +111,85 @@ data_output_folder = os.path.join(output_base_folder, "Data")
 plots_folder = os.path.join(output_base_folder, "Plots")
 os.makedirs(data_output_folder, exist_ok=True)
 os.makedirs(plots_folder, exist_ok=True)
+
+ # --- START: Generate Cohort Summary Statistics for Manuscript ---
+print("\n--- Generating Cohort Summary Statistics ---")
+try:
+        # Use the filtered dataframe 'df' which represents the analysis cohort
+        summary_cohort_df = df.copy()
+
+        # Define key columns - you can adjust 'Sex' if the column name is different
+        IMAGING_COL_SUMMARY = 'Contralateral_Putamen_Z'
+        SEX_COL = 'Sex' # <-- IMPORTANT: Change this if your gender column is named differently!
+
+            # Calculate statistics
+        num_hand_observations = summary_cohort_df.shape[0]
+        num_unique_patients = summary_cohort_df['Patient ID'].nunique() # <-- ADD THIS LINE
+        mean_age = summary_cohort_df[AGE_COL].mean()
+        std_age = summary_cohort_df[AGE_COL].std()
+
+        # Handle Sex/Gender if the column exists
+        percent_male = np.nan
+        if SEX_COL in summary_cohort_df.columns:
+            # Robustly handle different text values for male ('m', 'male', '1')
+            male_count = summary_cohort_df[SEX_COL].astype(str).str.strip().str.lower().isin(['m', 'male', '1']).sum()
+            total_with_sex = summary_cohort_df[SEX_COL].notna().sum()
+            if total_with_sex > 0:
+                percent_male = (male_count / total_with_sex) * 100
+        else:
+            print(f"[INFO] '{SEX_COL}' column not found. Percentage Male will be 'NaN'.")
+
+        # Handle Imaging stats if the column exists
+        mean_z, std_z, min_z, max_z = np.nan, np.nan, np.nan, np.nan
+        if IMAGING_COL_SUMMARY in summary_cohort_df.columns:
+            # Drop NaN from this specific column for accurate stats
+            imaging_data = summary_cohort_df[IMAGING_COL_SUMMARY].dropna()
+            mean_z = imaging_data.mean()
+            std_z = imaging_data.std()
+            min_z = imaging_data.min()
+            max_z = imaging_data.max()
+        else:
+             print(f"[WARNING] Imaging column '{IMAGING_COL_SUMMARY}' not found. Imaging stats will be 'NaN'.")
+
+
+            # Assemble into a clean DataFrame
+        summary_data = {
+            'Metric': [
+                'Number of unique patients',                                   # <-- ADD THIS
+                'Number of hand observations (N)',                             # <-- RENAME THIS
+                'Mean Age (years)',
+                'Std Dev Age (years)',
+                'Percentage Male (%)',
+                'Mean Contralateral Putamen Z-score',
+                'Std Dev Contralateral Putamen Z-score',
+                'Min Contralateral Putamen Z-score',
+                'Max Contralateral Putamen Z-score'
+            ],
+            'Value': [
+                num_unique_patients,                                           # <-- ADD THIS
+                num_hand_observations,                                         # <-- RENAME THIS
+                mean_age,
+                std_age,
+                percent_male,
+                mean_z,
+                std_z,
+                min_z,
+                max_z
+            ]
+        }
+        summary_output_df = pd.DataFrame(summary_data)
+        summary_output_df['Value'] = summary_output_df['Value'].round(2)
+
+        # Save to a CSV file in the data output folder
+        summary_csv_path = os.path.join(data_output_folder, "cohort_summary_statistics.csv")
+        summary_output_df.to_csv(summary_csv_path, index=False, sep=';', decimal='.')
+        print(f"[SUCCESS] Cohort summary saved to: {summary_csv_path}")
+
+except Exception as e:
+    print(f"[ERROR] Could not generate cohort summary statistics. Reason: {e}")
+print("--- Finished Cohort Summary Generation ---\n")
+    # --- END: Generate Cohort Summary Statistics for Manuscript ---
+
 
 SIGNIFICANCE_ALPHA = 0.05
 TOP_N_FOR_SCATTER_PANEL = 3
@@ -177,22 +258,42 @@ else:
             all_significant_bivariate_results_dfs[task_prefix] = pd.DataFrame()
 
 
-# --- Final Data Aggregation ---
+# --- Final Data Aggregation & Saving ---
 all_raw_bivariate_results_df = pd.DataFrame(all_raw_bivariate_results_list)
 combined_significant_bivariate_df = pd.DataFrame()
 if any(not df.empty for df in all_significant_bivariate_results_dfs.values()):
     combined_significant_bivariate_df = pd.concat(
         [df for df in all_significant_bivariate_results_dfs.values() if not df.empty],
         ignore_index=True
-    )
+    ).sort_values(by=['Task', 'Q-value (FDR corrected)']) # Added sorting
 
-# Rename correlation column for consistency in plots
+# Rename correlation column for consistency
 corr_col_name = "Partial Correlation (r)" if CONTROL_FOR_AGE else "Pearson Correlation (r)"
 if corr_col_name in combined_significant_bivariate_df.columns:
     combined_significant_bivariate_df.rename(columns={corr_col_name: "Correlation (r)"}, inplace=True)
 if corr_col_name in all_raw_bivariate_results_df.columns:
     all_raw_bivariate_results_df.rename(columns={corr_col_name: "Correlation (r)"}, inplace=True)
 
+# --- NEW: Save the result dataframes to CSV files ---
+print("\n--- Saving Bivariate Correlation Results ---")
+try:
+    # Save all raw (uncorrected) results
+    raw_results_path = os.path.join(data_output_folder, "all_raw_bivariate_results.csv")
+    all_raw_bivariate_results_df.to_csv(raw_results_path, index=False, sep=';', decimal='.')
+    print(f"[SUCCESS] All raw results saved to: {raw_results_path}")
+
+    # Save only the FDR-corrected significant results
+    if not combined_significant_bivariate_df.empty:
+        sig_results_path = os.path.join(data_output_folder, "all_significant_bivariate_results.csv")
+        combined_significant_bivariate_df.to_csv(sig_results_path, index=False, sep=';', decimal='.')
+        print(f"[SUCCESS] Significant results saved to: {sig_results_path}")
+    else:
+        print("[INFO] No significant results to save.")
+
+except Exception as e:
+    print(f"[ERROR] Failed to save result CSV files. Reason: {e}")
+print("--- Finished Saving Results ---\n")
+# --- END NEW SECTION ---
 
 # ===================================================================================
 # --- (REVISED LAYOUT 4) GENERATE PUBLICATION-READY FIGURE 1 (AGE-CONTROLLED) ---
@@ -253,8 +354,8 @@ else:
             return "Not Significant"
         
         panel_B_data['Significance'] = panel_B_data.index.map(get_sig_status_revised)
-        palette_map = {'Significant: Both Tasks': 'black', 'Significant: Finger Tapping': '#007acc', 'Significant: Hand Movements': '#e85f5f', 'Not Significant': 'lightgrey'}
-        marker_map = {'Significant: Both Tasks': 'o', 'Significant: Finger Tapping': 's', 'Significant: Hand Movements': '^', 'Not Significant': '.'}
+        palette_map = {'Significant: Both Tasks': 'black', 'Significant: Finger Tapping': '#007acc', 'Significant: Hand Movements': '#e85f5f', 'Not Significant': 'grey'}
+        marker_map = {'Significant: Both Tasks': 'o', 'Significant: Finger Tapping': 's', 'Significant: Hand Movements': '^', 'Not Significant': 'o'}
         size_map = {'Significant: Both Tasks': 80, 'Significant: Finger Tapping': 60, 'Significant: Hand Movements': 60, 'Not Significant': 30}
         panel_B_data['PointSize'] = panel_B_data['Significance'].map(size_map)
         

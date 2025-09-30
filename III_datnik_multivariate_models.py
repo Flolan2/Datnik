@@ -52,7 +52,7 @@ except Exception as e: print(f"FATAL ERROR: Error loading or processing data: {e
 df_full['Medication Condition'] = df_full['Medication Condition'].astype(str).str.strip().str.lower(); df = df_full[df_full['Medication Condition'] == 'off'].copy()
 if df.empty: print("FATAL ERROR: No data remaining after filtering for 'OFF' state. Exiting."); sys.exit(0)
 else: print(f"Data filtered for 'OFF' state. New shape: {df.shape}")
-base_kinematic_cols = ["meanamplitude","stdamplitude","meanspeed","stdspeed","meanrmsvelocity","stdrmsvelocity","meanopeningspeed","stdopeningspeed","meanclosingspeed","stdclosingspeed","meancycleduration","stdcycleduration","rangecycleduration","rate","amplitudedecay","velocitydecay","ratedecay","cvamplitude","cvcycleduration","cvspeed","cvrmsvelocity","cvopeningspeed","cvclosingspeed"]; TARGET_IMAGING_COL = "Contralateral_Striatum_Z"; AGE_COL = 'Age'; tasks = ['ft', 'hm']
+base_kinematic_cols = ["meanamplitude","stdamplitude","meanspeed","stdspeed","meanrmsvelocity","stdrmsvelocity","meanopeningspeed","stdopeningspeed","meanclosingspeed","stdclosingspeed","meancycleduration","stdcycleduration","rangecycleduration","rate","amplitudedecay","velocitydecay","ratedecay","cvamplitude","cvcycleduration","cvspeed","cvrmsvelocity","cvopeningspeed","cvclosingspeed"]; TARGET_IMAGING_COL = "Contralateral_Putamen_Z"; AGE_COL = 'Age'; tasks = ['ft', 'hm']
 output_base_folder = os.path.join(project_root_dir, "Output"); data_output_folder = os.path.join(output_base_folder, "Data"); plots_folder = os.path.join(output_base_folder, "Plots"); os.makedirs(data_output_folder, exist_ok=True); os.makedirs(plots_folder, exist_ok=True)
 PLS_BSR_THRESHOLD = 1.8; pls_config = {'PLS_BSR_THRESHOLD': PLS_BSR_THRESHOLD, 'data_output_folder': data_output_folder, 'plots_folder': os.path.join(plots_folder, "PLS"), 'PLS_MAX_COMPONENTS': 5, 'PLS_N_PERMUTATIONS': 1000, 'PLS_N_BOOTSTRAPS': 1000, 'PLS_ALPHA': 0.05}; os.makedirs(pls_config['plots_folder'], exist_ok=True)
 enet_config = {'PLS_BSR_THRESHOLD': PLS_BSR_THRESHOLD, 'data_output_folder': data_output_folder, 'plots_folder': os.path.join(plots_folder, "ElasticNet"), 'ENET_L1_RATIOS': np.linspace(0.1, 1.0, 10), 'ENET_CV_FOLDS': 5, 'ENET_MAX_ITER': 10000, 'ENET_RANDOM_STATE': 42, 'PLOT_TOP_N_ENET': 20}; os.makedirs(enet_config['plots_folder'], exist_ok=True)
@@ -79,11 +79,67 @@ for task in tasks:
     pls_results = run_pls_pipeline(X=X_resid_df, y=y_resid, config=pls_config)
     if pls_results: all_task_pls_results[task] = pls_results; print("PLS pipeline finished successfully.")
     else: print("PLS pipeline did not return results.")
+    # --- NEW: Save PLS results to CSV ---
+    if pls_results:
+        try:
+            # Save Bootstrap Ratios
+            first_sig_lv_data = next((lv for lv in pls_results['lv_results'].values() if lv.get('significant')), pls_results['lv_results'].get('LV1'))
+            if first_sig_lv_data and first_sig_lv_data.get('bootstrap_ratios') is not None:
+                bsr_series = first_sig_lv_data['bootstrap_ratios']
+                bsr_path = os.path.join(data_output_folder, f"pls_bootstrap_ratios_{task}.csv")
+                bsr_series.to_csv(bsr_path, sep=';', decimal='.', header=['BSR'])
+                print(f"[SUCCESS] Saved PLS BSRs for {task.upper()} to: {bsr_path}")
+    
+            # Save Summary Stats
+            summary_stats = {
+                'Task': task,
+                'LV1_Correlation': first_sig_lv_data.get('correlation'),
+                'LV1_P_Value': first_sig_lv_data.get('p_value'),
+                'LV1_Significant': first_sig_lv_data.get('significant')
+            }
+            summary_df = pd.DataFrame([summary_stats])
+            summary_path = os.path.join(data_output_folder, f"pls_summary_stats_{task}.csv")
+            summary_df.to_csv(summary_path, index=False, sep=';', decimal='.')
+            print(f"[SUCCESS] Saved PLS summary for {task.upper()} to: {summary_path}")
+    
+        except Exception as e:
+            print(f"[ERROR] Could not save PLS results for {task.upper()}. Reason: {e}")
+    # --- END NEW SECTION ---
+    
     print("Calling ElasticNet pipeline with residualized data...")
     enet_config['task_prefix'] = task
     enet_results_single_task = run_elasticnet_pipeline(X=X_resid_df, y=y_resid, config=enet_config)
     if enet_results_single_task: all_task_enet_results[task] = enet_results_single_task; print("ElasticNet pipeline finished successfully.")
     else: print("ElasticNet pipeline did not return results.")
+    
+    # --- NEW: Save ElasticNet results to CSV ---
+    if enet_results_single_task:
+        try:
+            # Save Coefficients
+            if enet_results_single_task.get('coefficients') is not None:
+                coeffs_series = enet_results_single_task['coefficients']
+                coeffs_path = os.path.join(data_output_folder, f"enet_coefficients_{task}.csv")
+                coeffs_series.to_csv(coeffs_path, sep=';', decimal='.', header=['Coefficient'])
+                print(f"[SUCCESS] Saved ENet coefficients for {task.upper()} to: {coeffs_path}")
+    
+            # Save Summary Stats
+            perf = enet_results_single_task.get('performance', {})
+            summary_stats = {
+                'Task': task,
+                'CV_R2': perf.get('R2'),
+                'Optimal_Alpha': perf.get('alpha'),
+                'Optimal_L1_Ratio': perf.get('l1_ratio')
+            }
+            summary_df = pd.DataFrame([summary_stats])
+            summary_path = os.path.join(data_output_folder, f"enet_summary_stats_{task}.csv")
+            summary_df.to_csv(summary_path, index=False, sep=';', decimal='.')
+            print(f"[SUCCESS] Saved ENet summary for {task.upper()} to: {summary_path}")
+    
+        except Exception as e:
+            print(f"[ERROR] Could not save ENet results for {task.upper()}. Reason: {e}")
+    # --- END NEW SECTION ---
+    
+    
 pls_results_raw_dict = all_task_pls_results; enet_results = all_task_enet_results
 
 # ==============================================================================
@@ -157,8 +213,8 @@ else:
 
             if not coeffs_nonzero.empty:
                 # --- CHANGE 2: Use new, high-contrast colors ---
-                color_significant = "#29686B"  # Deep Teal
-                color_not_significant = "#F08335"  # Vibrant Orange
+                color_significant =  "#F08335" #Vibrant Orange
+                color_not_significant = "#29686B" #teal
 
                 pls_sig_for_task = significant_pls_features.get(task, [])
                 colors = [color_significant if name in pls_sig_for_task else color_not_significant for name in coeffs_nonzero.index]

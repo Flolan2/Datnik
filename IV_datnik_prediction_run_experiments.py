@@ -219,11 +219,28 @@ summary_list = []
 for (thresh, cfg), metrics in results_data_metrics.items():
     df_metrics = pd.DataFrame(metrics)
     summary_list.append({
-        'Threshold_Value': thresh, 'Config_Name': cfg, 
-        'Task_Name': utils.get_task_from_config_name(cfg),
-        'Mean_ROC_AUC': df_metrics['roc_auc'].mean(), 'Std_ROC_AUC': df_metrics['roc_auc'].std()
+    'Threshold_Value': thresh, 'Config_Name': cfg, 
+    'Task_Name': utils.get_task_from_config_name(cfg),
+    'Mean_ROC_AUC': df_metrics['roc_auc'].mean(), 
+    'Std_ROC_AUC': df_metrics['roc_auc'].std(),
+    
+    # --- ADD THESE FOUR LINES ---
+    'Mean_Sensitivity': df_metrics['sensitivity'].mean(),
+    'Std_Sensitivity': df_metrics['sensitivity'].std(),
+    'Mean_Specificity': df_metrics['specificity'].mean(),
+    'Std_Specificity': df_metrics['specificity'].std()
+    # ----------------------------
     })
 final_summary_df = pd.DataFrame(summary_list).sort_values(by=['Config_Name', 'Threshold_Value'])
+
+# --- NEW: Save the final summary dataframe to CSV ---
+try:
+    summary_path = os.path.join(run_output_data_folder, "prediction_threshold_summary.csv")
+    final_summary_df.to_csv(summary_path, index=False, sep=';', decimal='.')
+    logger.info(f"[SUCCESS] Saved prediction summary to: {summary_path}")
+except Exception as e:
+    logger.error(f"[ERROR] Failed to save prediction summary CSV. Reason: {e}")
+# --- END NEW SECTION ---
 
 # --- Collect Coefficients for the Best Model at the Optimal Threshold ---
 results_data_importances = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -325,12 +342,53 @@ else:
 aggregated_importances = results_processor.aggregate_importances(
     {'group': results_data_importances}, config, output_dir_override=run_output_data_folder
 )
+# --- NEW: Save the aggregated FT coefficients to CSV for manuscript ---
+try:
+    ft_coeffs_df = aggregated_importances.get('group', {}).get('LR_RFE15_FT_OriginalFeats', {}).get('ft')
+    if ft_coeffs_df is not None and not ft_coeffs_df.empty:
+        coeffs_path = os.path.join(run_output_data_folder, "prediction_ft_coefficients.csv")
+        ft_coeffs_df.to_csv(coeffs_path, sep=';', decimal='.')
+        logger.info(f"[SUCCESS] Saved FT model coefficients to: {coeffs_path}")
+    else:
+        logger.warning("[WARNING] FT coefficients dataframe was empty. No file saved.")
+except Exception as e:
+    logger.error(f"[ERROR] Failed to save FT coefficients CSV. Reason: {e}")
+# --- END NEW SECTION ---
 
 # ==============================================================================
 # --- GENERATE PUBLICATION-READY FIGURE 3 ---
 # ==============================================================================
 if config.GENERATE_PLOTS and not final_summary_df.empty:
     logger.info("\n--- Generating Figure 3: Prediction Results Summary (FT vs HM, Directional) ---")
+    
+    # --- MODIFICATION START: Added dictionary for readable names ---
+    VARIABLE_NAMES = {
+        'meanamplitude': 'Mean Amplitude',
+        'stdamplitude': 'SD of Amplitude',
+        'meanrmsvelocity': 'Mean RMS Velocity',
+        'stdrmsvelocity': 'SD of RMS Velocity',
+        'meanopeningspeed': 'Mean Opening Speed',
+        'stdopeningspeed': 'SD of Opening Speed',
+        'meanclosingspeed': 'Mean Closing Speed',
+        'stdclosingspeed': 'SD of Closing Speed',
+        'meancycleduration': 'Mean Cycle Duration',
+        'stdcycleduration': 'SD of Cycle Duration',
+        'rangecycleduration': 'Range of Cycle Duration',
+        'amplitudedecay': 'Amplitude Decay',
+        'velocitydecay': 'Velocity Decay',
+        'ratedecay': 'Rate Decay',
+        'cvamplitude': 'CV of Amplitude',
+        'cvcycleduration': 'CV of Cycle Duration',
+        'cvrmsvelocity': 'CV of RMS Velocity',
+        'cvopeningspeed': 'CV of Opening Speed',
+        'cvclosingspeed': 'CV of Closing Speed',
+        'rate': 'Frequency',
+        'meanspeed': 'Mean Speed',
+        'stdspeed': 'SD of Speed',
+        'cvspeed': 'CV of Speed'
+    }
+    # --- MODIFICATION END ---
+    
     try:
         CONFIG_FT = 'LR_RFE15_FT_OriginalFeats'
         CONFIG_HM = 'LR_RFE15_HM_OriginalFeats'
@@ -373,7 +431,12 @@ if config.GENERATE_PLOTS and not final_summary_df.empty:
         if ft_coeffs_df is not None and not ft_coeffs_df.empty:
             plot_df = ft_coeffs_df.reindex(ft_coeffs_df['Mean_Importance'].abs().sort_values(ascending=False).index).head(config.PLOT_TOP_N_FEATURES)
             plot_df = plot_df.sort_values('Mean_Importance', ascending=False)
-            plot_df['Readable_Feature'] = plot_df.index.str.replace('ft_', '').str.replace('_', ' ').str.title()
+            
+            # --- MODIFICATION START: Use the dictionary to create readable feature names ---
+            base_feature_names = plot_df.index.str.replace('ft_', '')
+            plot_df['Readable_Feature'] = base_feature_names.map(VARIABLE_NAMES)
+            # --- MODIFICATION END ---
+            
             colors = ['crimson' if c < 0 else 'royalblue' for c in plot_df['Mean_Importance']]
             sns.barplot(x=plot_df['Mean_Importance'], y=plot_df['Readable_Feature'], palette=colors, ax=ax_C)
             ax_C.axvline(0, color='k', linewidth=0.8, linestyle='--')
