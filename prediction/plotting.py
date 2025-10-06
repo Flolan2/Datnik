@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 Plotting functions for visualizing experiment results.

@@ -1,4 +1,3 @@
-
 # --- START OF FILE IV_datnik_prediction_run_experiments.py (MODIFIED FOR SENSITIVITY ANALYSIS) ---
 # -*- coding: utf-8 -*-
 """
@@ -57,7 +56,7 @@ THRESHOLDS_TO_SWEEP = np.round(np.arange(-3.0, -1.5, 0.1), 2) # e.g., -3.0, -2.9
 # --- Adaptive Repetition Control ---
 USE_AUTOMATIC_STOPPING_RULE = True
 MIN_REPETITIONS = 100
-MAX_REPETITIONS = 1000
+MAX_REPETITIONS = 300
 DESIRED_HALF_WIDTH = 0.025
 CONFIDENCE_LEVEL = 0.95
 
