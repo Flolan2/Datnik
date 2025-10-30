@@ -1,261 +1,309 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-levodopa_ols_analysis_robust.py
-
-Purpose
--------
-Use baseline-adjusted regression models with robust statistical methods to assess
-the relationship between dopaminergic deficit and levodopa response (Δ).
-
-Key Improvements from Previous Version:
-----------------------------------------
-1) Same-Row Residualization: Ensures that for each model, the residualization
-   and final regression are performed on the exact same set of complete observations,
-   satisfying the Frisch-Waugh-Lovell theorem.
-2) Cluster-Robust Standard Errors: Accounts for potential non-independence of
-   observations from the same patient (e.g., left and right hands) by clustering
-   standard errors at the patient level.
-3) Pre-Pivot Averaging: Explicitly handles repeated visits by averaging kinematic
-   data per patient-hand before pivoting, preventing data mixing.
-4) Fully Standardized Betas: The outcome variable (Δ_resid) is now also z-scored,
-   so the reported beta coefficients are fully standardized (SD change in Δ per
-   SD change in predictor).
-5) Robust Domain Aggregation: Domain scores are calculated by averaging the
-   standardized scores of available features for each observation.
+Improved levodopa correlation analysis (Z-score version)
+-------------------------------------------------------
+- Keeps only DaT predictors containing "_Z"
+- Harmonizes polarity for all features
+- Orthogonalizes OFF vs contra DaT
+- Global FDR across all tests
+- Contra vs Ipsi comparison
 """
 
 import os
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
-from statsmodels.stats.multitest import multipletests
 import statsmodels.formula.api as smf
+from statsmodels.stats.multitest import multipletests
 from scipy.stats import norm
 import traceback
 
-# --- Configuration (Unchanged) ---
+# -------------------
+# CONFIG
+# -------------------
 AGE_COL = "Age"
-DATSCAN_COL = "Contralateral_Putamen_Z"
 PATIENT_ID_CANDIDATES = ["Patient ID", "Patient_ID", "Subject_ID", "patient_id", "ID"]
 HAND_CANDIDATES = ["Hand_Performed", "Hand", "hand", "Side"]
 TASKS = ["ft", "hm"]
-BASE_FEATURES = [
-    "meanamplitude", "stdamplitude", "meanspeed", "stdspeed", "meanrmsvelocity",
-    "stdrmsvelocity", "meanopeningspeed", "stdopeningspeed", "meanclosingspeed",
-    "stdclosingspeed", "meancycleduration", "stdcycleduration", "rangecycleduration",
-    "rate", "amplitudedecay", "velocitydecay", "ratedecay", "cvamplitude",
-    "cvcycleduration", "cvspeed", "cvrmsvelocity", "cvopeningspeed", "cvclosingspeed"
-]
-POLARITY: Dict[str, int] = {
-    "meanamplitude": +1, "meanspeed": +1, "meanrmsvelocity": +1, "meanopeningspeed": +1, "meanclosingspeed": +1, "rate": +1,
-    "stdamplitude": -1, "stdspeed": -1, "stdrmsvelocity": -1, "stdopeningspeed": -1, "stdclosingspeed": -1,
-    "cvamplitude": -1, "cvcycleduration": -1, "cvspeed": -1, "cvrmsvelocity": -1, "cvopeningspeed": -1, "cvclosingspeed": -1,
-    "meancycleduration": -1, "stdcycleduration": -1, "rangecycleduration": -1, "amplitudedecay": -1, "velocitydecay": -1, "ratedecay": -1,
-}
-DOMAINS: Dict[str, List[str]] = {
-    "Amplitude": ["meanamplitude", "amplitudedecay"],
-    "Speed": ["meanspeed", "meanrmsvelocity", "meanopeningspeed", "meanclosingspeed", "velocitydecay", "ratedecay"],
-    "Variability": [
-        "stdamplitude","stdspeed","stdrmsvelocity","stdopeningspeed","stdclosingspeed",
-        "cvamplitude","cvcycleduration","cvspeed","cvrmsvelocity","cvopeningspeed","cvclosingspeed",
-        "meancycleduration","stdcycleduration","rangecycleduration"
-    ],
+EXPECTED_SIGN = -1   # biologically: lower DaT -> more improvement
+
+# Feature polarity (higher = worse, negative Δ = improvement)
+POLARITY = {
+    "meanamplitude": +1, "meanspeed": +1, "meanrmsvelocity": +1,
+    "meanopeningspeed": +1, "meanclosingspeed": +1, "rate": +1,
+    "stdamplitude": -1, "stdspeed": -1, "stdrmsvelocity": -1,
+    "stdopeningspeed": -1, "stdclosingspeed": -1,
+    "cvamplitude": -1, "cvcycleduration": -1, "cvspeed": -1,
+    "cvrmsvelocity": -1, "cvopeningspeed": -1, "cvclosingspeed": -1,
+    "meancycleduration": -1, "stdcycleduration": -1, "rangecycleduration": -1,
+    "amplitudedecay": -1, "velocitydecay": -1, "ratedecay": -1,
 }
 
-# --- Utilities (Unchanged) ---
-def pick_first_present(d: pd.DataFrame, candidates: List[str]) -> str:
+# -------------------
+# UTILITIES
+# -------------------
+def pick_first_present(df, candidates):
     for c in candidates:
-        if c in d.columns: return c
-    return ""
+        if c in df.columns:
+            return c
+    raise ValueError(f"No column from {candidates} found in dataframe")
 
-def zscore(s: pd.Series) -> pd.Series:
-    mu, sd = np.nanmean(s.values), np.nanstd(s.values, ddof=1) # Use ddof=1 for sample std dev
-    if sd == 0 or np.isnan(sd): return pd.Series(np.zeros_like(s), index=s.index)
-    return (s - mu) / sd
+def ci_from_beta_se(beta, se, alpha=0.05):
+    z = norm.ppf(1 - alpha/2)
+    return beta - z*se, beta + z*se
 
-def ci_from_beta_se(beta: float, se: float, alpha: float = 0.05) -> Tuple[float, float]:
-    z = norm.ppf(1 - alpha / 2.0)
-    return beta - z * se, beta + z * se
-
-def ensure_dirs(outdir: str):
-    data_dir, plots_dir = os.path.join(outdir, "Data"), os.path.join(outdir, "Plots")
-    os.makedirs(data_dir, exist_ok=True); os.makedirs(plots_dir, exist_ok=True)
-    return data_dir, plots_dir
-
-# ---------------------------
-# Core modelling (UPDATED FOR ROBUSTNESS)
-# ---------------------------
-
-def run_ols_robust(df_model: pd.DataFrame, outcome: str, predictors: List[str], patient_col: str) -> Dict:
-    """Fits an OLS model with cluster-robust standard errors and fully standardized variables."""
-    d = df_model[[outcome] + predictors + [patient_col]].dropna().copy()
-    
-    base_results = {"n": d.shape[0], "beta_dat_std": np.nan, "se_dat": np.nan, "p_dat": np.nan, "beta_off_std": np.nan, "p_off": np.nan, "rsquared_adj": np.nan, "error": "None"}
-    if d.shape[0] < 10:
-        base_results["error"] = "Too few samples"
-        return base_results
-
-    # Z-score outcome and predictors for standardized betas
-    d[f"z_{outcome}"] = zscore(d[outcome])
-    for pred in predictors:
-        d[f"z_{pred}"] = zscore(d[pred])
-
-    formula = f"z_{outcome} ~ z_{predictors[0]} + z_{predictors[1]}"
+def run_ols(df, outcome, predictors, patient_col):
     try:
-        model = smf.ols(formula, d)
-        # Use cluster-robust standard errors
-        res = model.fit(cov_type="cluster", cov_kwds={"groups": d[patient_col]})
-        
-        beta_dat, se_dat, p_dat = res.params.get(f"z_{predictors[1]}", np.nan), res.bse.get(f"z_{predictors[1]}", np.nan), res.pvalues.get(f"z_{predictors[1]}", np.nan)
-        beta_off, p_off = res.params.get(f"z_{predictors[0]}", np.nan), res.pvalues.get(f"z_{predictors[0]}", np.nan)
-        rsquared_adj = res.rsquared_adj
-        
-        base_results.update({
-            "beta_dat_std": beta_dat, "se_dat": se_dat, "p_dat": p_dat,
-            "beta_off_std": beta_off, "p_off": p_off, "rsquared_adj": rsquared_adj
-        })
+        f = f"{outcome} ~ {' + '.join(predictors)}"
+        res = smf.ols(f, df).fit(cov_type="cluster", cov_kwds={"groups": df[patient_col]})
+        return dict(beta=res.params, se=res.bse, p=res.pvalues,
+                    rsq=res.rsquared_adj, n=len(res.resid))
     except Exception as e:
-        base_results["error"] = str(e)
-    return base_results
+        return dict(error=str(e))
 
-# ---------------------------
-# Main Execution Block
-# ---------------------------
-
+# -------------------
+# MAIN
+# -------------------
 def main():
-    @dataclass
-    class Args: input: str; outdir: str; make_plots: bool
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    args = Args(input=os.path.join(project_root, "Output", "Data_Processed", "final_merged_data.csv"),
-                outdir=os.path.join(project_root, "Output"), make_plots=True)
-    print(f"[INFO] Running in Spyder mode. Input: {args.input}")
-    print(f"[INFO] Output will be saved to: {args.outdir}")
+    input_path = os.path.join(project_root, "Output", "Data_Processed", "final_merged_data.csv")
+    outdir = os.path.join(project_root, "Output")
+    os.makedirs(outdir, exist_ok=True)
 
-    data_dir, plots_dir = ensure_dirs(args.outdir)
-    try: df_long = pd.read_csv(args.input, sep=';', decimal='.')
-    except: df_long = pd.read_csv(args.input, sep=',', decimal='.')
+    print(f"[INFO] Loading: {input_path}")
+    try:
+        df_long = pd.read_csv(input_path, sep=';', decimal='.')
+        
+    except Exception:
+        df_long = pd.read_csv(input_path, sep=',', decimal='.')
 
     patient_col = pick_first_present(df_long, PATIENT_ID_CANDIDATES)
     hand_col = pick_first_present(df_long, HAND_CANDIDATES)
-    kinematic_cols = [f"{t}_{f}" for t in TASKS for f in BASE_FEATURES if f"{t}_{f}" in df_long.columns]
     
-    # --- NEW: Handle repeated visits by pre-averaging ---
-    print("\n[INFO] Pre-processing: Averaging repeated visits per patient-hand...")
-    agg_dict = {col: 'mean' for col in kinematic_cols}
-    agg_dict[AGE_COL] = 'first' # Assuming Age/DaTscan are stable per patient
-    agg_dict[DATSCAN_COL] = 'first'
-    df_long_avg = df_long.groupby([patient_col, hand_col, 'Medication Condition']).agg(agg_dict).reset_index()
-    print(f"[SUCCESS] Data aggregated. Shape changed from {df_long.shape} to {df_long_avg.shape}")
+    # --- NEW: Count patients with ON recordings
+    med_col = "Medication Condition"
+    if med_col in df_long.columns:
+        medon_patients = df_long.loc[
+            df_long[med_col].astype(str).str.lower().str.strip() == "on"
+        ]
+        n_on_unique = medon_patients[patient_col].nunique()
+        print(f"[INFO] Unique patients with ON-medication recordings: {n_on_unique}")
+    else:
+        print("[WARN] No 'Medication Condition' column found.")
 
-    print("\n[INFO] Pre-processing: Pivoting data from long to wide format...")
+
+    # --- keep only Z-score DaT predictors
+    # --- keep only Z-score DaT predictors from the Putamen
+    dat_cols = [c for c in df_long.columns if "_Z" in c and "Putamen" in c]
+    print(f"[INFO] Found {len(dat_cols)} DaT Z predictors.")
+
+    # --- DaT correlation matrix
+    corr = df_long[dat_cols].corr()
+    corr.to_csv(os.path.join(outdir,"DaT_Z_predictor_correlations.csv"))
+    print("[INFO] Saved DaT Z correlation matrix.")
+
+    # --- Safe pivot
+    df_long["Medication Condition"] = df_long["Medication Condition"].astype(str).str.lower().str.strip()
+    index_cols = [patient_col, hand_col, AGE_COL] + dat_cols
+    numeric_cols = df_long.select_dtypes(include=[np.number]).columns.tolist()
+    keep_cols = index_cols + ["Medication Condition"]
+    df_long_pivotable = df_long[keep_cols + [c for c in numeric_cols if c not in index_cols]]
+    print(f"[INFO] Pivoting with {len(numeric_cols)} numeric columns.")
+
     try:
-        df_long_avg['Medication Condition'] = df_long_avg['Medication Condition'].astype(str).str.strip().str.lower()
-        df_on_off = df_long_avg[df_long_avg['Medication Condition'].isin(['on', 'off'])].copy()
-        
-        index_cols = [patient_col, hand_col, AGE_COL, DATSCAN_COL]
-        df = df_on_off.pivot_table(index=index_cols, columns='Medication Condition', values=kinematic_cols)
-        df.columns = [f'{col[0]}_{col[1].upper()}' for col in df.columns]; df.reset_index(inplace=True)
-        print(f"[SUCCESS] Data pivoted. Analysis will proceed on wide data (Shape: {df.shape})")
-    except Exception as e:
-        print(f"[FATAL ERROR] Failed to pivot data."); traceback.print_exc(); return
+        df_pivot = (
+            df_long_pivotable[df_long_pivotable["Medication Condition"].isin(["on","off"])]
+            .pivot_table(index=index_cols, columns="Medication Condition")
+            .pipe(lambda d: d.set_axis([f"{a}_{b.upper()}" for a,b in d.columns], axis=1))
+        )
+        df_pivot.reset_index(inplace=True)
+        print(f"[SUCCESS] Pivot complete: {df_pivot.shape}")
+    except Exception:
+        print("[FATAL] Pivot failed.")
+        traceback.print_exc()
+        return
 
+    # -------------------
+    # MAIN ANALYSIS
+    # -------------------
+    all_results=[]
     for task in TASKS:
-        present_feats = [f for f in BASE_FEATURES if f"{task}_{f}_OFF" in df.columns and f"{task}_{f}_ON" in df.columns]
-        if not present_feats: print(f"\n[INFO] No features for task '{task}'. Skipping."); continue
-        
-        print(f"\n[INFO] Processing Task: {task.upper()}")
-        
-        # --- FEATURE-LEVEL ANALYSIS ---
-        feature_rows = []
-        df_task_residuals = pd.DataFrame(index=df.index) # To store residuals for domain analysis
+        feat_cols=[c for c in df_pivot.columns if c.startswith(f"{task}_") and c.endswith("_OFF")]
+        if not feat_cols: 
+            continue
+        print(f"[INFO] Task {task.upper()} — {len(feat_cols)} features")
 
-        for feat in present_feats:
-            # --- NEW: Same-Row Residualization (FWL) ---
-            cols_needed = [f"{task}_{feat}_ON", f"{task}_{feat}_OFF", AGE_COL, DATSCAN_COL, patient_col]
-            df_feat = df[cols_needed].dropna().copy()
-            
-            if df_feat.shape[0] < 10: continue
-
-            # Harmonize, calculate delta
+        for feat_off in feat_cols:
+            feat_on = feat_off.replace("_OFF","_ON")
+            if feat_on not in df_pivot: 
+                continue
+            feat = feat_off.split(f"{task}_")[-1].replace("_OFF","")
             sign = POLARITY.get(feat, +1)
-            df_feat[f"{feat}_off_h"] = sign * df_feat[f"{task}_{feat}_OFF"]
-            df_feat[f"{feat}_on_h"] = sign * df_feat[f"{task}_{feat}_ON"]
-            df_feat[f"{feat}_delta"] = df_feat[f"{feat}_on_h"] - df_feat[f"{feat}_off_h"]
 
-            # Residualize all variables against Age on the SAME subset of data
-            df_feat[f"{feat}_delta_resid"] = smf.ols(f"Q('{feat}_delta') ~ Q('{AGE_COL}')", data=df_feat).fit().resid
-            df_feat[f"{feat}_off_h_resid"] = smf.ols(f"Q('{feat}_off_h') ~ Q('{AGE_COL}')", data=df_feat).fit().resid
-            df_feat['dat_resid'] = smf.ols(f"Q('{DATSCAN_COL}') ~ Q('{AGE_COL}')", data=df_feat).fit().resid
-            
-            # Store residuals for later domain aggregation
-            df_task_residuals = df_task_residuals.join(df_feat[[f"{feat}_off_h_resid", f"{feat}_delta_resid"]])
+            for dat_contra in [c for c in dat_cols if "Contralateral" in c]:
+                dat_ipsi = dat_contra.replace("Contralateral","Ipsilateral")
+                use_cols=[patient_col,AGE_COL,feat_off,feat_on,dat_contra]
+                if dat_ipsi in df_pivot.columns: use_cols.append(dat_ipsi)
+                df=df_pivot[use_cols].dropna().copy()
+                if df.shape[0]<10: 
+                    continue
 
-            # --- UPDATED: Call robust OLS function ---
-            stats = run_ols_robust(
-                df_feat,
-                outcome=f"{feat}_delta_resid",
-                predictors=[f"{feat}_off_h_resid", 'dat_resid'],
-                patient_col=patient_col
-            )
-            stats.update({"task": task, "feature": feat})
-            
-            if not np.isnan(stats["beta_dat_std"]) and not np.isnan(stats["se_dat"]):
-                lo, hi = ci_from_beta_se(stats["beta_dat_std"], stats["se_dat"])
-            else:
-                lo = hi = np.nan
-            stats["ci_lo_dat"], stats["ci_hi_dat"] = lo, hi
-            feature_rows.append(stats)
-        
-        feat_df = pd.DataFrame(feature_rows)
-        if feat_df["p_dat"].notna().any():
-            rej, q, *_ = multipletests(feat_df["p_dat"].fillna(1.0).values, alpha=0.05, method="fdr_bh")
-            feat_df["q_dat"], feat_df["sig_dat_q<0.05"] = q, rej
-        else:
-            feat_df["q_dat"], feat_df["sig_dat_q<0.05"] = np.nan, False
-        out_csv_feat = os.path.join(data_dir, f"ols_robust_features_{task}.csv"); feat_df.to_csv(out_csv_feat, index=False)
-        print(f"  [OK] Saved feature-level robust OLS results: {out_csv_feat}")
+                # Harmonized feature space
+                df["off_h"] = sign*df[feat_off]
+                df["on_h"]  = sign*df[feat_on]
+                df["delta"] = df["on_h"] - df["off_h"]  # negative = improvement
 
-        # --- DOMAIN-LEVEL ANALYSIS ---
-        # First, calculate DaTscan residuals on the maximal available data for domains
-        df_task_residuals['dat_resid'] = smf.ols(f"Q('{DATSCAN_COL}') ~ Q('{AGE_COL}')", data=df.dropna(subset=[DATSCAN_COL, AGE_COL])).fit().resid
+                # Residualization
+                df["off_resid"]   = smf.ols(f"Q('off_h') ~ Q('{AGE_COL}')",df).fit().resid
+                df["delta_resid"] = smf.ols(f"Q('delta') ~ Q('{AGE_COL}')",df).fit().resid
+                df["dat_contra_resid"] = smf.ols(f"Q('{dat_contra}') ~ Q('{AGE_COL}')",df).fit().resid
+                if dat_ipsi in df:
+                    df["dat_ipsi_resid"] = smf.ols(f"Q('{dat_ipsi}') ~ Q('{AGE_COL}')",df).fit().resid
 
-        domain_rows = []
-        for domain, feats in DOMAINS.items():
-            off_resid_cols = [f"{f}_off_h_resid" for f in feats if f"{f}_off_h_resid" in df_task_residuals.columns]
-            delta_resid_cols = [f"{f}_delta_resid" for f in feats if f"{f}_delta_resid" in df_task_residuals.columns]
-            
-            if not off_resid_cols or not delta_resid_cols: continue
-            
-            # Z-score each feature residual before averaging
-            z_off_resids = df_task_residuals[off_resid_cols].apply(zscore)
-            z_delta_resids = df_task_residuals[delta_resid_cols].apply(zscore)
+                # Orthogonalize OFF
+                df["off_only"] = smf.ols("off_resid ~ dat_contra_resid",df).fit().resid
 
-            # Create domain score by averaging available (non-NaN) z-scored features for each row
-            dom_df = pd.DataFrame(index=df.index)
-            dom_df[f"{domain}_off_dom_resid"] = z_off_resids.mean(axis=1)
-            dom_df[f"{domain}_delta_dom_resid"] = z_delta_resids.mean(axis=1)
-            dom_df['dat_resid'] = df_task_residuals['dat_resid']
-            dom_df[patient_col] = df[patient_col]
+                # =============================
+                # EXTENDED MODEL SET
+                # =============================
+                
+                # --- Base linear terms (already residualized)
+                r1 = run_ols(df, "delta_resid", ["off_only", "dat_contra_resid"], patient_col)
+                
+                # --- Add ipsilateral predictor (original Model 2)
+                r2 = run_ols(df, "delta_resid",
+                             ["off_only", "dat_contra_resid", "dat_ipsi_resid"],
+                             patient_col) if "dat_ipsi_resid" in df else None
+                
+                # --- Model 3: Quadratic term (nonlinearity test)
+                try:
+                    df["dat_contra_resid_sq"] = df["dat_contra_resid"] ** 2
+                    r3 = run_ols(df, "delta_resid",
+                                 ["off_only", "dat_contra_resid", "dat_contra_resid_sq"],
+                                 patient_col)
+                except Exception as e:
+                    r3 = {"error": str(e)}
+                
+                # --- Model 4: Log-transformed DaT (saturating test)
+                try:
+                    eps = 1e-6  # avoid log(0)
+                    df["dat_contra_resid_log"] = np.log(np.abs(df["dat_contra_resid"]) + eps)
+                    r4 = run_ols(df, "delta_resid",
+                                 ["off_only", "dat_contra_resid_log"],
+                                 patient_col)
+                except Exception as e:
+                    r4 = {"error": str(e)}
+                
+                # --- Collect all models
+                for m_id, res in enumerate([r1, r2, r3, r4], start=1):
+                    if not res or "error" in res:
+                        continue
+                    # For nonlinear models, report the main DaT term (linear or log)
+                    key = "dat_contra_resid"
+                    if m_id == 3:
+                        key = "dat_contra_resid_sq" if key not in res["beta"] else key
+                    elif m_id == 4:
+                        key = "dat_contra_resid_log"
+                    b = res["beta"].get(key, np.nan)
+                    se = res["se"].get(key, np.nan)
+                    lo, hi = ci_from_beta_se(b, se)
+                    wrong_sign = np.sign(b) != EXPECTED_SIGN
+                    all_results.append(dict(
+                        task=task,
+                        feature=feat,
+                        dat_contra=dat_contra,
+                        model=m_id,
+                        beta=b,
+                        se=se,
+                        ci_lo=lo,
+                        ci_hi=hi,
+                        p=res["p"].get(key, np.nan),
+                        rsq=res["rsq"],
+                        n=res["n"],
+                        wrong_sign=wrong_sign
+                    ))
 
-            stats = run_ols_robust(
-                dom_df,
-                outcome=f"{domain}_delta_dom_resid",
-                predictors=[f"{domain}_off_dom_resid", 'dat_resid'],
-                patient_col=patient_col
-            )
-            stats["domain"] = domain
-            domain_rows.append(stats)
-            
-        dom_res_df = pd.DataFrame(domain_rows)
-        if not dom_res_df.empty and dom_res_df["p_dat"].notna().any():
-            rej, q, *_ = multipletests(dom_res_df["p_dat"].fillna(1.0).values, alpha=0.05, method="fdr_bh")
-            dom_res_df["q_dat"], dom_res_df["sig_dat_q<0.05"] = q, rej
-        out_csv_dom = os.path.join(data_dir, f"ols_robust_domains_{task}.csv"); dom_res_df.to_csv(out_csv_dom, index=False)
-        print(f"  [OK] Saved domain-level robust OLS results: {out_csv_dom}")
+                for m_id,res in enumerate([r1,r2],start=1):
+                    if not res or "error" in res: 
+                        continue
+                    b=res["beta"].get("dat_contra_resid",np.nan)
+                    se=res["se"].get("dat_contra_resid",np.nan)
+                    lo,hi=ci_from_beta_se(b,se)
+                    wrong_sign = np.sign(b)!=EXPECTED_SIGN
+                    all_results.append(dict(
+                        task=task, feature=feat, dat_contra=dat_contra, model=m_id,
+                        beta=b, se=se, ci_lo=lo, ci_hi=hi,
+                        p=res["p"].get("dat_contra_resid",np.nan),
+                        rsq=res["rsq"], n=res["n"], wrong_sign=wrong_sign
+                    ))
 
-    print("\n[DONE] Robust multiple regression (OLS) analysis complete.")
+    # -------------------
+    # POSTPROCESSING
+    # -------------------
+    print("[INFO] Consolidating results...")
+    res_df = pd.DataFrame(all_results)
+    if res_df.empty:
+        print("[WARN] No valid models fit.")
+        return
+    
+    # FDR correction
+    rej, q, _, _ = multipletests(res_df["p"].fillna(1.0), alpha=0.05, method="fdr_bh")
+    res_df["q"] = q
+    res_df["sig_q<0.05"] = rej
+    
+    # ============================================================
+    # 🔧 FILTER: Keep only Model 1 (contralateral-only)
+    #     and restrict to Putamen DaT predictors
+    # ============================================================
+    # res_df = res_df[
+    #     (res_df["model"] == 1) &
+    #     (res_df["dat_contra"].str.contains("Putamen", case=False, na=False))
+    # ]
+    
+    # Sort for readability
+    res_df.sort_values(by="q", inplace=True)
+    
+    # Save main summary CSV (filtered)
+    out_csv = os.path.join(outdir, "summary_ols_robust_improved_Z.csv")
+    res_df.to_csv(out_csv, index=False)
+    print(f"[DONE] Results saved: {out_csv}")
+    print(f"[INFO] Total models after filtering: {len(res_df)}")
+    
+    # ============================================================
+    # 📄 SUPPLEMENTARY TABLE 2 (DaT ↔ Levodopa)
+    # ============================================================
+    supp2 = res_df.loc[res_df["q"] < 0.05, [
+        "task", "feature", "beta", "p", "q", "ci_lo", "ci_hi", "n"
+    ]].copy()
+    
+    # Format table values
+    supp2["beta"] = supp2["beta"].round(2)
+    supp2["p"] = supp2["p"].apply(lambda x: "< 0.001" if x < 0.001 else f"{x:.3f}")
+    supp2["q"] = supp2["q"].apply(lambda x: "< 0.001" if x < 0.001 else f"{x:.3f}")
+    supp2["ci_lo"] = supp2["ci_lo"].round(2)
+    supp2["ci_hi"] = supp2["ci_hi"].round(2)
+    supp2.rename(columns={
+        "task": "TASK",
+        "feature": "KINEMATIC_FEATURE",
+        "beta": "STANDARDIZED_BETA",
+        "p": "P_VALUE",
+        "q": "Q_VALUE_FDR",
+        "ci_lo": "CI_LOW",
+        "ci_hi": "CI_HIGH",
+        "n": "N"
+    }, inplace=True)
+    
+    supp2.sort_values(["TASK", "Q_VALUE_FDR"], inplace=True)
+    
+    # Export
+    supp2_path = os.path.join(outdir, "Supplementary_Table_2_DaT_vs_Levodopa.csv")
+    supp2.to_csv(supp2_path, index=False)
+    print(f"[INFO] Supplementary Table 2 saved: {supp2_path}")
+    print(f"[INFO] Significant results (q<0.05): {len(supp2)} rows")
+    
+    # Optional: preview top few results in console
+    print(supp2.head(10))
 
-if __name__ == "__main__":
+
+if __name__=="__main__":
     main()

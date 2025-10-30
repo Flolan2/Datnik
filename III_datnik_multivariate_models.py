@@ -138,6 +138,10 @@ else:
                 y_labels = [get_readable_name(name) for name in bsr.index]
                 
                 sns.barplot(x=bsr.values, y=y_labels, palette=colors, ax=ax)
+                ax.tick_params(axis='y', labelsize=12)  # Adjust number for smaller/larger text
+                ax.tick_params(axis='x', labelsize=10)
+
+                
                 ax.axvline(x=PLS_BSR_THRESHOLD, color='k', linestyle='--'); ax.axvline(x=-PLS_BSR_THRESHOLD, color='k', linestyle='--')
                 ax.set_xlabel("Bootstrap Ratio (BSR)", fontsize=11)
                 

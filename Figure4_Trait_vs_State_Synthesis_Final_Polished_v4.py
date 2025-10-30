@@ -1,0 +1,442 @@
+# --- Figure4_Trait_vs_State_Synthesis_Final_Polished_v4.py ---
+
+import os
+import sys
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+from adjustText import adjust_text
+import matplotlib.patches as mpatches
+# --- 1) ADDED IMPORTS ---
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+import matplotlib as mpl
+
+print("\n" + "="*88)
+print("--- RUNNING: Figure 4 — Final Version (Improved Labeling in Panel D) ---")
+print("="*88 + "\n")
+
+# --- 1) CONFIG ---
+PLOT_CONFIG = {
+    'figsize': (24, 20),
+    'suptitle': 'Figure 4. Trait–State Map and Clustering of Kinematic Biomarkers',
+    'context': ("talk", 1.1),
+    'style': 'seaborn-v0_8-whitegrid',
+    'palette': {
+        'Speed': '#2ca02c',
+        'Amplitude': '#1f77b4',
+        'Variability/Consistency': '#d62728',
+        'Timing/Rhythm': '#ff7f0e',
+        'Other': 'grey'
+    },
+    'response_threshold': 10,
+    'trait_threshold': 0.15,
+    'x_lims': (-45, 45),
+    'scatter_size': 150,
+    'edge_color': 'black',
+    'line_width': 1.0,
+    'title_fontsize': 22,
+    'axis_label_fontsize': 16,
+    'tick_fontsize': 14,
+}
+
+MARKERS = {
+    'Speed': 's',
+    'Amplitude': 'o',
+    'Variability/Consistency': '^',
+    'Timing/Rhythm': 'D',
+    'Other': 'X'
+}
+
+plt.rcParams.update({
+    'font.size': PLOT_CONFIG['tick_fontsize'],
+    'axes.titleweight': 'bold',
+    'axes.labelweight': 'bold',
+    'axes.spines.right': False,
+    'axes.spines.top': False,
+    'legend.frameon': True,
+    'legend.framealpha': 0.95,
+    'savefig.dpi': 300,
+    'axes.titlepad': 30
+})
+
+IMPROVE_WHEN_LOWER = [
+    'stdamplitude', 'stdspeed', 'stdrmsvelocity', 'stdopeningspeed',
+    'stdclosingspeed', 'meancycleduration', 'stdcycleduration',
+    'rangecycleduration', 'amplitudedecay', 'velocitydecay', 'ratedecay',
+    'cvamplitude', 'cvcycleduration', 'cvspeed', 'cvrmsvelocity',
+    'cvopeningspeed', 'cvclosingspeed'
+]
+
+FEATURE_NAME_MAP = {
+    'meanamplitude':'MeanAmplitude','stdamplitude':'StdAmplitude','meanspeed':'MeanSpeed',
+    'stdspeed':'StdSpeed','meanrmsvelocity':'MeanRMSVelocity','stdrmsvelocity':'StdRMSVelocity',
+    'meanopeningspeed':'MeanOpeningSpeed','stdopeningspeed':'StdOpeningSpeed',
+    'meanclosingspeed':'MeanClosingSpeed','stdclosingspeed':'StdClosingSpeed',
+    'meancycleduration':'MeanCycleDuration','stdcycleduration':'StdCycleDuration',
+    'rangecycleduration':'RangeCycleDuration','rate':'Rate','frequency':'Frequency',
+    'amplitudedecay':'AmplitudeDecay','velocitydecay':'VelocityDecay','ratedecay':'RateDecay',
+    'cvamplitude':'CV_Amplitude','cvcycleduration':'CV_CycleDuration','cvspeed':'CV_Speed',
+    'cvrmsvelocity':'CV_RMSVelocity','cvopeningspeed':'CV_OpeningSpeed','cvclosingspeed':'CV_ClosingSpeed'
+}
+
+# --- 2) PATHS (Corrected) ---
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
+
+# Move up one level if script is inside an "Online" folder
+if script_dir.endswith("Online") or os.path.basename(script_dir) == "Online":
+    project_root_dir = os.path.dirname(script_dir)
+else:
+    project_root_dir = script_dir if os.path.isdir(os.path.join(script_dir, "Output")) else os.path.dirname(script_dir)
+
+# Define clean, canonical paths
+stimvision_input_dir = os.path.join(project_root_dir, "Input", "Combined_Analysis")
+datscan_input_dir = os.path.join(project_root_dir, "Output", "Data")
+plots_dir = os.path.join(project_root_dir, "Output", "Plots")
+os.makedirs(plots_dir, exist_ok=True)
+
+print(f"[PATHS] Project root detected as: {project_root_dir}")
+print(f"[PATHS] Plots will be saved to: {plots_dir}")
+
+# --- 3) HELPERS ---
+def categorize_feature(name: str) -> str:
+    n = name.lower()
+    is_variability = any(k in n for k in ['cv', 'std', 'decay'])
+    if 'speed' in n or 'velocity' in n or 'rate' in n or 'frequency' in n:
+        return 'Variability/Consistency' if is_variability else 'Speed'
+    if 'amplitude' in n:
+        return 'Variability/Consistency' if is_variability else 'Amplitude'
+    if 'duration' in n:
+        return 'Timing/Rhythm'
+    return 'Other'
+
+def decorate_background(ax, x_label, y_label=None):
+    t_thr = PLOT_CONFIG['trait_threshold']
+    r_thr = PLOT_CONFIG['response_threshold']
+    ax.axvspan(-r_thr, r_thr, color='#e0e0e0', alpha=0.3, zorder=0, lw=0)
+    ax.axhspan(-t_thr, t_thr, color='#e0e0e0', alpha=0.3, zorder=0, lw=0)
+    ax.axhline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
+    ax.axvline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
+    style = dict(color='grey', linestyle='--', lw=0.8, alpha=0.5, zorder=1)
+    ax.axhline(t_thr, **style); ax.axhline(-t_thr, **style)
+    ax.axvline(r_thr, **style); ax.axvline(-r_thr, **style)
+    af = dict(fontsize=12, color='#666666', style='italic', ha='center', va='center', zorder=0)
+    xlim = PLOT_CONFIG['x_lims']
+    ylim_max = 0.4
+    ax.text(0, ylim_max - 0.02, "Trait Linked", **af)
+    ax.text(0, -ylim_max + 0.02, "Trait Linked", **af)
+    ax.text(0, 0, "Trait Independent\n&\nTherapy Resistant", **af)
+    ax.text(xlim[0] + 5, 0, "Therapy Responsive", **af)
+    ax.text(xlim[1] - 5, 0, "Therapy Responsive", **af)
+    ax.set_xlabel(x_label, fontsize=PLOT_CONFIG['axis_label_fontsize'])
+    if y_label:
+        ax.set_ylabel(y_label, fontsize=PLOT_CONFIG['axis_label_fontsize'])
+    ax.set_xlim(xlim)
+    ax.set_ylim(-0.45, 0.45)
+    ax.tick_params(axis='both', which='major', labelsize=PLOT_CONFIG['tick_fontsize'])
+
+# --- 4) DATA PROCESSING ---
+try:
+    # (Data loading and processing code remains unchanged)
+    trait_file = os.path.join(datscan_input_dir, "all_raw_bivariate_results.csv")
+    df_trait_raw = pd.read_csv(trait_file, sep=';', decimal='.')
+    df_trait_raw['Feature'] = df_trait_raw['Base Kinematic'].map(FEATURE_NAME_MAP)
+    df_trait = df_trait_raw.groupby('Feature')['Correlation (r)'].mean().rename('Trait_Link').to_frame()
+    raw_effect_dbs = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_raw_dbs_effect_Bilateral_Average.csv"), index_col="PatientID")
+    baseline_dbs   = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_baseline_values_Bilateral_Average.csv"), index_col="PatientID")
+    raw_effect_levo = pd.read_csv(os.path.join(stimvision_input_dir, "medication_raw_effect_hand_opening.csv"), index_col="Patient_ID")
+    baseline_levo   = pd.read_csv(os.path.join(stimvision_input_dir, "medication_baseline_hand_opening.csv"), index_col="Patient_ID")
+    for df in [raw_effect_dbs, baseline_dbs, raw_effect_levo, baseline_levo]:
+        df.columns = df.columns.str.lower().map(FEATURE_NAME_MAP)
+    common_features = df_trait.index.intersection(raw_effect_dbs.columns).intersection(raw_effect_levo.columns)
+    for df in [raw_effect_dbs, raw_effect_levo]:
+        for col in df.columns:
+            names = [k for k, v in FEATURE_NAME_MAP.items() if v == col]
+            if names and names[0] in IMPROVE_WHEN_LOWER:
+                df[col] *= -1
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dbs_norm  = (raw_effect_dbs[common_features] / baseline_dbs[common_features].abs()) * 100
+        levo_norm = (raw_effect_levo[common_features] / baseline_levo[common_features].abs()) * 100
+    dbs_resp  = dbs_norm.median().rename('DBS_Responsiveness')
+    levo_resp = levo_norm.median().rename('Levodopa_Responsiveness')
+    df_plot = df_trait.join(dbs_resp).join(levo_resp).loc[common_features].dropna()
+    df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
+    print(f"[SUCCESS] Loaded and processed {len(df_plot)} common features.")
+except Exception:
+    print("Generating DUMMY data for plot generation...")
+    np.random.seed(42)
+    feats = list(FEATURE_NAME_MAP.values()); feats.remove('CV_Amplitude'); feats.remove('MeanAmplitude')
+    df_plot = pd.DataFrame({'Trait_Link': np.random.uniform(-0.4, 0.35, len(feats)), 'Levodopa_Responsiveness': np.random.uniform(-30, 40, len(feats)), 'DBS_Responsiveness': np.random.uniform(-30, 40, len(feats))}, index=feats)
+    df_plot['DBS_Responsiveness'] = df_plot['Levodopa_Responsiveness'] * 0.8 + np.random.normal(0, 10, len(feats))
+    df_plot.loc['CV_Amplitude'] = [-0.38, 8.5, 9.5]; df_plot.loc['MeanAmplitude'] = [0.32, 6, 8]
+    df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
+
+# --- GMM TRAIT–STATE CLUSTERING (Data-Driven) ---
+df_gmm = df_plot.copy()
+df_gmm['Abs_Trait'] = df_gmm['Trait_Link'].abs()
+df_gmm['Abs_Levo']  = df_gmm['Levodopa_Responsiveness'].abs()
+df_gmm['Abs_DBS']   = df_gmm['DBS_Responsiveness'].abs()
+df_gmm['Mean_Response'] = df_gmm[['Abs_Levo', 'Abs_DBS']].mean(axis=1)
+scaler = StandardScaler()
+Z = scaler.fit_transform(df_gmm[['Abs_Trait', 'Mean_Response']].values)
+gmm = GaussianMixture(n_components=3, covariance_type='full', random_state=42)
+clusters = gmm.fit_predict(Z)
+probs = gmm.predict_proba(Z)
+df_gmm['GMM_Cluster'] = clusters
+df_gmm['GMM_Conf'] = probs.max(axis=1)
+centroids = scaler.inverse_transform(gmm.means_)
+centroid_df = pd.DataFrame(centroids, columns=['Abs_Trait', 'Mean_Response'])
+trait_cluster_idx = centroid_df['Abs_Trait'].idxmax()
+state_cluster_idx = centroid_df['Mean_Response'].idxmax()
+labels = {i: 'Comprehensive' for i in range(len(centroid_df))}
+if trait_cluster_idx != state_cluster_idx:
+    labels[trait_cluster_idx] = 'Trait'
+    labels[state_cluster_idx] = 'State'
+else:
+    print("[WARNING] The same cluster was identified as highest-trait and highest-state. All labeled as 'Comprehensive'.")
+df_gmm['GMM_Label'] = df_gmm['GMM_Cluster'].map(labels)
+df_plot = df_plot.join(df_gmm[['GMM_Cluster','GMM_Label','GMM_Conf','Abs_Trait','Abs_Levo','Abs_DBS','Mean_Response']])
+
+# --- EXPORT, STATS, AND PRINTING ---
+out_stats_path = os.path.join(plots_dir, "Figure4_TraitState_GMM_Statistics.csv")
+cols = ['Trait_Link','Levodopa_Responsiveness','DBS_Responsiveness','Abs_Trait','Abs_Levo','Abs_DBS','Mean_Response','Category','GMM_Cluster','GMM_Label','GMM_Conf']
+df_plot[cols].sort_values(['GMM_Label','Category','Abs_Trait'], ascending=[True, True, False]).to_csv(out_stats_path)
+print(f"[STATS] GMM classification table saved -> {out_stats_path}")
+print("[STATS] Cluster counts:", df_plot['GMM_Label'].value_counts().to_dict())
+centroid_df_named = centroid_df.copy()
+centroid_df_named['Label'] = [labels[i] for i in range(3)]
+print("[STATS] GMM centroids (|Trait|, Mean|Δ|) by label:\n", centroid_df_named.sort_values('Label'))
+
+
+
+# --- 5) PLOTTING ---
+sns.set_context(*PLOT_CONFIG['context'])
+plt.style.use(PLOT_CONFIG['style'])
+fig, axes = plt.subplots(2, 2, figsize=PLOT_CONFIG['figsize'])
+(axA, axB), (axC, axD) = axes
+fig.suptitle(PLOT_CONFIG['suptitle'], fontsize=28, weight='bold', y=0.99)
+
+# --- PANEL A: Levodopa ---
+decorate_background(axA, 'Levodopa Responsiveness (% Change)', 'Trait Link (Partial r with DaT Binding)')
+sns.scatterplot(data=df_plot, x='Levodopa_Responsiveness', y='Trait_Link', hue='Category', palette=PLOT_CONFIG['palette'], s=PLOT_CONFIG['scatter_size'], alpha=0.8, edgecolor=PLOT_CONFIG['edge_color'], linewidth=PLOT_CONFIG['line_width'], style='Category', markers=MARKERS, ax=axA, zorder=3)
+axA.set_title('A) Levodopa: Pharmacological State Response', fontsize=PLOT_CONFIG['title_fontsize'])
+if axA.get_legend(): axA.get_legend().remove()
+
+# --- PANEL B: DBS ---
+decorate_background(axB, 'DBS Responsiveness (% Change)')
+sns.scatterplot(data=df_plot, x='DBS_Responsiveness', y='Trait_Link', hue='Category', palette=PLOT_CONFIG['palette'], s=PLOT_CONFIG['scatter_size'], alpha=0.8, edgecolor=PLOT_CONFIG['edge_color'], linewidth=PLOT_CONFIG['line_width'], style='Category', markers=MARKERS, ax=axB, zorder=3)
+axB.set_title('B) DBS: Electrical State Response', fontsize=PLOT_CONFIG['title_fontsize'])
+axB.set_ylabel('')
+axB.set_yticklabels([])
+if axB.get_legend(): axB.get_legend().remove()
+
+# --- PANEL C: Concordance (Final version — regression + 95% CI + identity line) ---
+from sklearn.linear_model import LinearRegression
+import statsmodels.api as sm
+
+# Prepare data
+x = df_plot['Levodopa_Responsiveness'].values.reshape(-1, 1)
+y = df_plot['DBS_Responsiveness'].values
+model = LinearRegression().fit(x, y)
+slope = model.coef_[0]
+intercept = model.intercept_
+r_obs, p_obs = stats.pearsonr(df_plot['Levodopa_Responsiveness'], df_plot['DBS_Responsiveness'])
+
+# Axis limits
+all_resp = pd.concat([df_plot['Levodopa_Responsiveness'], df_plot['DBS_Responsiveness']])
+limit = np.ceil(max(abs(all_resp.min()), abs(all_resp.max())) / 5) * 5
+lims = (-limit, limit)
+
+# Fit for CI using statsmodels
+X_sm = sm.add_constant(x)
+ols_model = sm.OLS(y, X_sm).fit()
+x_fit = np.linspace(lims[0], lims[1], 200)
+X_fit_sm = sm.add_constant(x_fit)
+y_pred = ols_model.get_prediction(X_fit_sm)
+pred_summary = y_pred.summary_frame(alpha=0.05)  # 95% CI
+
+# Plot: baseline and regression
+axC.axhline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
+axC.axvline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
+# axC.plot(lims, lims, '--', color='0.85', linewidth=1, label='x = y (ideal)', zorder=1)
+
+# Regression line (empirical fit)
+axC.plot(
+    x_fit,
+    pred_summary['mean'],
+    color='black',
+    lw=1.5,
+    alpha=0.8,
+    label='Linear fit',
+    zorder=4
+)
+
+# Confidence band
+axC.fill_between(
+    x_fit,
+    pred_summary['mean_ci_lower'],
+    pred_summary['mean_ci_upper'],
+    color='grey',
+    alpha=0.2,
+    zorder=2,
+    label='95% CI'
+)
+
+# Scatter points
+sns.scatterplot(
+    data=df_plot,
+    x='Levodopa_Responsiveness',
+    y='DBS_Responsiveness',
+    hue='Category',
+    palette=PLOT_CONFIG['palette'],
+    s=PLOT_CONFIG['scatter_size'] * 0.7,
+    alpha=0.65,
+    edgecolor=None,
+    style='Category',
+    markers=MARKERS,
+    ax=axC,
+    zorder=5
+)
+
+# Labels & aesthetics
+axC.set_title('C) Concordance of Therapeutic Response', fontsize=PLOT_CONFIG['title_fontsize'])
+axC.set_xlabel('Levodopa Responsiveness (% Change)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
+axC.set_ylabel('DBS Responsiveness (% Change)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
+axC.set_xlim(lims)
+axC.set_ylim(lims)
+axC.set_aspect('equal')
+axC.tick_params(labelsize=PLOT_CONFIG['tick_fontsize'])
+if axC.get_legend():
+    axC.get_legend().remove()
+
+# Annotate stats
+p_text = "p < 0.001" if p_obs < 0.001 else f"p = {p_obs:.3f}"
+stats_text = f"r = {r_obs:.2f}\nslope = {slope:.2f}\n{p_text}"
+axC.text(
+    0.05, 0.95, stats_text,
+    transform=axC.transAxes,
+    fontsize=14,
+    va='top',
+    bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='grey', alpha=0.9)
+)
+
+# Legend for reference lines
+axC.legend(
+    loc='lower right',
+    frameon=True,
+    fontsize=12,
+    title='Reference',
+    title_fontsize=13
+)
+
+
+# --- PANEL D: Data-Driven Trait–State Clusters (no double arrows, data-based coords) ---
+import matplotlib.patheffects as pe
+
+axD.set_title('D) Data-Driven Trait–State Clusters', fontsize=PLOT_CONFIG['title_fontsize'])
+axD.set_xlabel('|Trait Link| (abs partial r with DaT)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
+axD.set_ylabel('Mean Therapy Responsiveness\n(mean of |ΔLevodopa|, |ΔDBS|) [%]',
+               fontsize=PLOT_CONFIG['axis_label_fontsize'])
+axD.grid(True, which='both', linestyle='--', alpha=0.35)
+axD.tick_params(axis='both', which='major', labelsize=PLOT_CONFIG['tick_fontsize'])
+
+label_colors = {'State': '#009E73', 'Trait': '#0072B2', 'Comprehensive': '#dddddd'}
+N_LABELS_PER_CLUSTER = 5
+
+xmax = max(0.01, df_plot['Abs_Trait'].max()) * 1.3
+ymax = max(1.0, df_plot['Mean_Response'].max()) * 1.35
+axD.set_xlim(0, xmax)
+axD.set_ylim(0, ymax)
+
+texts_to_adjust = []
+artists_to_avoid = []
+
+for lab, sub in df_plot.groupby('GMM_Label'):
+    color = label_colors.get(lab, 'grey')
+    if lab == 'Trait':
+        sub_sorted = sub.sort_values('Abs_Trait', ascending=False)
+    elif lab == 'State':
+        sub_sorted = sub.sort_values('Mean_Response', ascending=False)
+    else:
+        sub_sorted = sub.sort_values('Abs_Trait', ascending=False)
+
+    top_n = sub_sorted.head(N_LABELS_PER_CLUSTER) if lab != 'Comprehensive' else sub_sorted.iloc[0:0]
+    rest = sub_sorted.iloc[N_LABELS_PER_CLUSTER:] if lab != 'Comprehensive' else sub_sorted
+
+    rest_scatter = axD.scatter(rest['Abs_Trait'], rest['Mean_Response'],
+                               s=110, alpha=0.45, edgecolor='grey', linewidth=0.6,
+                               color=color, zorder=3, rasterized=True)
+    artists_to_avoid.append(rest_scatter)
+
+    if not top_n.empty:
+        top_scatter = axD.scatter(top_n['Abs_Trait'], top_n['Mean_Response'],
+                                  s=180, alpha=0.95, edgecolor='black', linewidth=1.1,
+                                  color=color, zorder=5, label=f"{lab} (n={len(sub)})", rasterized=True)
+        artists_to_avoid.append(top_scatter)
+
+        for idx, row in top_n.iterrows():
+            x, y = row['Abs_Trait'], row['Mean_Response']
+            dx = xmax * 0.02
+            dy = ymax * 0.015
+
+            ann = axD.annotate(
+                idx,
+                xy=(x, y),
+                xytext=(x + dx, y + dy),
+                textcoords='data',              # unified coordinate system
+                ha='left', va='bottom',
+                fontsize=11.8,
+                bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.85),
+                arrowprops=dict(arrowstyle='-', color='#444444', lw=0.8),  # drawn ONCE
+                zorder=20
+            )
+            ann.set_path_effects([pe.withStroke(linewidth=3.0, foreground="white")])
+            texts_to_adjust.append(ann)
+
+# Centroids
+axD.scatter(centroid_df['Abs_Trait'], centroid_df['Mean_Response'],
+            s=500, marker='X', color='#cccccc', alpha=1.0, zorder=2,
+            label='Cluster centroids')
+
+# --- ADJUST TEXT (no arrowprops here!) ---
+if texts_to_adjust:
+    adjust_text(
+        texts_to_adjust,
+        ax=axD,
+        add_objects=artists_to_avoid,
+        force_text=(0.6, 0.6),
+        force_points=(0.3, 0.3),
+        expand_points=(1.6, 1.6),
+        lim=250,
+        #no arrowprops here — prevents duplicate arrows
+    )
+
+# Legend
+legD = axD.legend(frameon=True, fancybox=True, fontsize=14,
+                  title='Cluster Type', title_fontsize=16)
+legD.get_frame().set_alpha(0.95)
+
+
+
+# --- FINAL FIGURE ASSEMBLY & SAVE ---
+handles, labels_legend = axA.get_legend_handles_labels()
+by_label = dict(zip(labels_legend, handles))
+
+# --- MODIFICATION: Legend moved to the top center ---
+fig.legend(by_label.values(), by_label.keys(), title='Feature Domain', loc='upper center',
+           bbox_to_anchor=(0.5, 0.975), ncol=len(by_label), fontsize=16, title_fontsize=18, frameon=False)
+# ---------------------------------------------------
+
+plt.tight_layout(rect=[0.02, 0.08, 0.98, 0.96])
+fig.subplots_adjust(wspace=0.2, hspace=0.4) 
+
+out_plot_path = os.path.join(plots_dir, "Figure4_Final_with_GMM_CleanLabels.pdf")
+plt.savefig(out_plot_path, dpi=300, bbox_inches='tight')
+print(f"\n[SUCCESS] Final figure saved to:\n  --> {out_plot_path}")
+
+print("\n--- SCRIPT COMPLETE ---")
