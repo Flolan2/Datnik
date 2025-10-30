@@ -247,19 +247,105 @@ fig, axes = plt.subplots(2, 2, figsize=PLOT_CONFIG['figsize'])
 (axA, axB), (axC, axD) = axes
 fig.suptitle(PLOT_CONFIG['suptitle'], fontsize=28, weight='bold', y=0.99)
 
-# --- PANEL A: Levodopa ---
-decorate_background(axA, 'Levodopa Responsiveness (% Change)', 'Trait Link (Partial r with DaT Binding)')
-sns.scatterplot(data=df_plot, x='Levodopa_Responsiveness', y='Trait_Link', hue='Category', palette=PLOT_CONFIG['palette'], s=PLOT_CONFIG['scatter_size'], alpha=0.8, edgecolor=PLOT_CONFIG['edge_color'], linewidth=PLOT_CONFIG['line_width'], style='Category', markers=MARKERS, ax=axA, zorder=3)
-axA.set_title('A) Levodopa: Pharmacological State Response', fontsize=PLOT_CONFIG['title_fontsize'])
-if axA.get_legend(): axA.get_legend().remove()
+# --------------------------------------------------------------------------------------
+# PANELS A & B – Density + Highlight Redesign for Clarity
+# --------------------------------------------------------------------------------------
+from matplotlib.colors import ListedColormap, Normalize
+from matplotlib import cm
 
-# --- PANEL B: DBS ---
-decorate_background(axB, 'DBS Responsiveness (% Change)')
-sns.scatterplot(data=df_plot, x='DBS_Responsiveness', y='Trait_Link', hue='Category', palette=PLOT_CONFIG['palette'], s=PLOT_CONFIG['scatter_size'], alpha=0.8, edgecolor=PLOT_CONFIG['edge_color'], linewidth=PLOT_CONFIG['line_width'], style='Category', markers=MARKERS, ax=axB, zorder=3)
-axB.set_title('B) DBS: Electrical State Response', fontsize=PLOT_CONFIG['title_fontsize'])
+# How many top features to label per panel
+TOP_N = 6
+
+def plot_density_panel(ax, xcol, title, xlabel):
+    """Improved scatter-density panel with labeled top features."""
+    decorate_background(ax, xlabel, 'Trait Link (Partial r with DaT Binding)' if 'Levo' in xcol else None)
+
+    # Base hexbin density map
+    hb = ax.hexbin(
+        df_plot[xcol],
+        df_plot['Trait_Link'],
+        gridsize=25,
+        cmap="Blues",
+        mincnt=1,
+        alpha=0.35,
+        linewidths=0,
+    )
+
+    # Overlay scatter (faded)
+    sns.scatterplot(
+        data=df_plot,
+        x=xcol,
+        y='Trait_Link',
+        hue='Category',
+        palette=PLOT_CONFIG['palette'],
+        s=PLOT_CONFIG['scatter_size'] * 0.6,
+        alpha=0.55,
+        edgecolor='none',
+        style='Category',
+        markers=MARKERS,
+        ax=ax,
+        zorder=4
+    )
+
+    # Highlight top N absolute trait-linked features
+    # --- Compute trait-linked but therapy-resistant features ---
+    # Rank: high |Trait_Link|, low |xcol| (Levo/DBS responsiveness)
+    df_plot['trait_rank'] = df_plot['Trait_Link'].abs().rank(ascending=False)
+    df_plot['resp_rank']  = df_plot[xcol].abs().rank(ascending=True)
+    df_plot['trait_resistance_score'] = df_plot['trait_rank'] + df_plot['resp_rank']
+    
+    # Select features with best (lowest) combined score
+    top_feats = df_plot.nsmallest(TOP_N, 'trait_resistance_score')
+
+    sns.scatterplot(
+        data=top_feats,
+        x=xcol,
+        y='Trait_Link',
+        color='black',
+        s=PLOT_CONFIG['scatter_size'] * 1.2,
+        edgecolor='yellow',
+        linewidth=1.2,
+        ax=ax,
+        zorder=6,
+        label=f'Top {TOP_N} |Trait|'
+    )
+
+    # Label those top features
+    for i, (feat, row) in enumerate(top_feats.iterrows()):
+        ax.text(
+            row[xcol] + 1.2,
+            row['Trait_Link'],
+            feat,
+            fontsize=11,
+            weight='bold',
+            va='center',
+            color='black',
+            zorder=7,
+            path_effects=[pe.withStroke(linewidth=2, foreground="white")],
+        )
+
+    ax.set_title(title, fontsize=PLOT_CONFIG['title_fontsize'])
+    ax.grid(True, linestyle='--', alpha=0.25)
+    ax.legend(loc='lower right', fontsize=11, frameon=True)
+
+# --- Panel A: Levodopa (Pharmacological state) ---
+plot_density_panel(
+    axA,
+    'Levodopa_Responsiveness',
+    'A) Levodopa: Pharmacological State Response',
+    'Levodopa Responsiveness (% Change)'
+)
+
+# --- Panel B: DBS (Electrical state) ---
+plot_density_panel(
+    axB,
+    'DBS_Responsiveness',
+    'B) DBS: Electrical State Response',
+    'DBS Responsiveness (% Change)'
+)
 axB.set_ylabel('')
 axB.set_yticklabels([])
-if axB.get_legend(): axB.get_legend().remove()
+
 
 # --- PANEL C: Concordance (Final version — regression + 95% CI + identity line) ---
 from sklearn.linear_model import LinearRegression
@@ -382,7 +468,7 @@ def plot_cov_ellipse(ax, mean, cov, color, alpha=0.15, lw=2.0):
 
 label_colors = {'State': '#009E73', 'Trait': '#0072B2', 'Comprehensive': '#999999'}
 
-axD.set_title('D) Data-Driven Trait–State Clusters (Enhanced)', fontsize=PLOT_CONFIG['title_fontsize'])
+axD.set_title('D) Data-Driven Trait–State Clusters', fontsize=PLOT_CONFIG['title_fontsize'])
 axD.set_xlabel('|Trait Link| (abs partial r with DaT)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
 axD.set_ylabel('Mean Therapy Responsiveness\n(mean of |ΔLevodopa|, |ΔDBS|) [%]', fontsize=PLOT_CONFIG['axis_label_fontsize'])
 axD.grid(True, linestyle='--', alpha=0.35)
