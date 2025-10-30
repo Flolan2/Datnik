@@ -1,4 +1,5 @@
-# --- Figure4_Trait_vs_State_Synthesis_Final_Polished_v4.py ---
+# --- Figure4_Trait_vs_State_Synthesis_Final_Polished_v5_FULL_fixed.py ---
+# Complete, end-to-end version with enhanced Figure 4 visualization (FutureWarning fixed)
 
 import os
 import sys
@@ -9,16 +10,30 @@ import seaborn as sns
 from scipy import stats
 from adjustText import adjust_text
 import matplotlib.patches as mpatches
-# --- 1) ADDED IMPORTS ---
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 import matplotlib as mpl
+from matplotlib.patches import Ellipse
+from sklearn.linear_model import LinearRegression
+import statsmodels.api as sm
+import matplotlib.patheffects as pe
+from math import pi
+import warnings
+
+# Optional: silence known harmless matplotlib FutureWarnings
+warnings.filterwarnings(
+    'ignore',
+    category=FutureWarning,
+    module='matplotlib\\.patches'
+)
 
 print("\n" + "="*88)
-print("--- RUNNING: Figure 4 — Final Version (Improved Labeling in Panel D) ---")
+print("--- RUNNING: Figure 4 — Enhanced Visualization Version (Fixed) ---")
 print("="*88 + "\n")
 
-# --- 1) CONFIG ---
+# --------------------------------------------------------------------------------------
+# 1) CONFIGURATION
+# --------------------------------------------------------------------------------------
 PLOT_CONFIG = {
     'figsize': (24, 20),
     'suptitle': 'Figure 4. Trait–State Map and Clustering of Kinematic Biomarkers',
@@ -62,39 +77,19 @@ plt.rcParams.update({
     'axes.titlepad': 30
 })
 
-IMPROVE_WHEN_LOWER = [
-    'stdamplitude', 'stdspeed', 'stdrmsvelocity', 'stdopeningspeed',
-    'stdclosingspeed', 'meancycleduration', 'stdcycleduration',
-    'rangecycleduration', 'amplitudedecay', 'velocitydecay', 'ratedecay',
-    'cvamplitude', 'cvcycleduration', 'cvspeed', 'cvrmsvelocity',
-    'cvopeningspeed', 'cvclosingspeed'
-]
-
-FEATURE_NAME_MAP = {
-    'meanamplitude':'MeanAmplitude','stdamplitude':'StdAmplitude','meanspeed':'MeanSpeed',
-    'stdspeed':'StdSpeed','meanrmsvelocity':'MeanRMSVelocity','stdrmsvelocity':'StdRMSVelocity',
-    'meanopeningspeed':'MeanOpeningSpeed','stdopeningspeed':'StdOpeningSpeed',
-    'meanclosingspeed':'MeanClosingSpeed','stdclosingspeed':'StdClosingSpeed',
-    'meancycleduration':'MeanCycleDuration','stdcycleduration':'StdCycleDuration',
-    'rangecycleduration':'RangeCycleDuration','rate':'Rate','frequency':'Frequency',
-    'amplitudedecay':'AmplitudeDecay','velocitydecay':'VelocityDecay','ratedecay':'RateDecay',
-    'cvamplitude':'CV_Amplitude','cvcycleduration':'CV_CycleDuration','cvspeed':'CV_Speed',
-    'cvrmsvelocity':'CV_RMSVelocity','cvopeningspeed':'CV_OpeningSpeed','cvclosingspeed':'CV_ClosingSpeed'
-}
-
-# --- 2) PATHS (Corrected) ---
+# --------------------------------------------------------------------------------------
+# 2) PATH SETUP
+# --------------------------------------------------------------------------------------
 try:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     script_dir = os.getcwd()
 
-# Move up one level if script is inside an "Online" folder
 if script_dir.endswith("Online") or os.path.basename(script_dir) == "Online":
     project_root_dir = os.path.dirname(script_dir)
 else:
     project_root_dir = script_dir if os.path.isdir(os.path.join(script_dir, "Output")) else os.path.dirname(script_dir)
 
-# Define clean, canonical paths
 stimvision_input_dir = os.path.join(project_root_dir, "Input", "Combined_Analysis")
 datscan_input_dir = os.path.join(project_root_dir, "Output", "Data")
 plots_dir = os.path.join(project_root_dir, "Output", "Plots")
@@ -103,7 +98,9 @@ os.makedirs(plots_dir, exist_ok=True)
 print(f"[PATHS] Project root detected as: {project_root_dir}")
 print(f"[PATHS] Plots will be saved to: {plots_dir}")
 
-# --- 3) HELPERS ---
+# --------------------------------------------------------------------------------------
+# 3) HELPERS
+# --------------------------------------------------------------------------------------
 def categorize_feature(name: str) -> str:
     n = name.lower()
     is_variability = any(k in n for k in ['cv', 'std', 'decay'])
@@ -140,48 +137,84 @@ def decorate_background(ax, x_label, y_label=None):
     ax.set_ylim(-0.45, 0.45)
     ax.tick_params(axis='both', which='major', labelsize=PLOT_CONFIG['tick_fontsize'])
 
-# --- 4) DATA PROCESSING ---
+# --------------------------------------------------------------------------------------
+# 4) DATA PROCESSING
+# --------------------------------------------------------------------------------------
+FEATURE_NAME_MAP = {
+    'meanamplitude':'MeanAmplitude','stdamplitude':'StdAmplitude','meanspeed':'MeanSpeed',
+    'stdspeed':'StdSpeed','meanrmsvelocity':'MeanRMSVelocity','stdrmsvelocity':'StdRMSVelocity',
+    'meanopeningspeed':'MeanOpeningSpeed','stdopeningspeed':'StdOpeningSpeed',
+    'meanclosingspeed':'MeanClosingSpeed','stdclosingspeed':'StdClosingSpeed',
+    'meancycleduration':'MeanCycleDuration','stdcycleduration':'StdCycleDuration',
+    'rangecycleduration':'RangeCycleDuration','rate':'Rate','frequency':'Frequency',
+    'amplitudedecay':'AmplitudeDecay','velocitydecay':'VelocityDecay','ratedecay':'RateDecay',
+    'cvamplitude':'CV_Amplitude','cvcycleduration':'CV_CycleDuration','cvspeed':'CV_Speed',
+    'cvrmsvelocity':'CV_RMSVelocity','cvopeningspeed':'CV_OpeningSpeed','cvclosingspeed':'CV_ClosingSpeed'
+}
+
+IMPROVE_WHEN_LOWER = [
+    'stdamplitude','stdspeed','stdrmsvelocity','stdopeningspeed','stdclosingspeed',
+    'meancycleduration','stdcycleduration','rangecycleduration','amplitudedecay',
+    'velocitydecay','ratedecay','cvamplitude','cvcycleduration','cvspeed',
+    'cvrmsvelocity','cvopeningspeed','cvclosingspeed'
+]
+
 try:
-    # (Data loading and processing code remains unchanged)
     trait_file = os.path.join(datscan_input_dir, "all_raw_bivariate_results.csv")
     df_trait_raw = pd.read_csv(trait_file, sep=';', decimal='.')
     df_trait_raw['Feature'] = df_trait_raw['Base Kinematic'].map(FEATURE_NAME_MAP)
     df_trait = df_trait_raw.groupby('Feature')['Correlation (r)'].mean().rename('Trait_Link').to_frame()
+
     raw_effect_dbs = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_raw_dbs_effect_Bilateral_Average.csv"), index_col="PatientID")
     baseline_dbs   = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_baseline_values_Bilateral_Average.csv"), index_col="PatientID")
     raw_effect_levo = pd.read_csv(os.path.join(stimvision_input_dir, "medication_raw_effect_hand_opening.csv"), index_col="Patient_ID")
     baseline_levo   = pd.read_csv(os.path.join(stimvision_input_dir, "medication_baseline_hand_opening.csv"), index_col="Patient_ID")
+
     for df in [raw_effect_dbs, baseline_dbs, raw_effect_levo, baseline_levo]:
         df.columns = df.columns.str.lower().map(FEATURE_NAME_MAP)
+
     common_features = df_trait.index.intersection(raw_effect_dbs.columns).intersection(raw_effect_levo.columns)
+
     for df in [raw_effect_dbs, raw_effect_levo]:
         for col in df.columns:
             names = [k for k, v in FEATURE_NAME_MAP.items() if v == col]
             if names and names[0] in IMPROVE_WHEN_LOWER:
                 df[col] *= -1
+
     with np.errstate(divide='ignore', invalid='ignore'):
         dbs_norm  = (raw_effect_dbs[common_features] / baseline_dbs[common_features].abs()) * 100
         levo_norm = (raw_effect_levo[common_features] / baseline_levo[common_features].abs()) * 100
+
     dbs_resp  = dbs_norm.median().rename('DBS_Responsiveness')
     levo_resp = levo_norm.median().rename('Levodopa_Responsiveness')
+
     df_plot = df_trait.join(dbs_resp).join(levo_resp).loc[common_features].dropna()
     df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
     print(f"[SUCCESS] Loaded and processed {len(df_plot)} common features.")
-except Exception:
+
+except Exception as e:
     print("Generating DUMMY data for plot generation...")
     np.random.seed(42)
     feats = list(FEATURE_NAME_MAP.values()); feats.remove('CV_Amplitude'); feats.remove('MeanAmplitude')
-    df_plot = pd.DataFrame({'Trait_Link': np.random.uniform(-0.4, 0.35, len(feats)), 'Levodopa_Responsiveness': np.random.uniform(-30, 40, len(feats)), 'DBS_Responsiveness': np.random.uniform(-30, 40, len(feats))}, index=feats)
+    df_plot = pd.DataFrame({
+        'Trait_Link': np.random.uniform(-0.4, 0.35, len(feats)),
+        'Levodopa_Responsiveness': np.random.uniform(-30, 40, len(feats)),
+        'DBS_Responsiveness': np.random.uniform(-30, 40, len(feats))
+    }, index=feats)
     df_plot['DBS_Responsiveness'] = df_plot['Levodopa_Responsiveness'] * 0.8 + np.random.normal(0, 10, len(feats))
-    df_plot.loc['CV_Amplitude'] = [-0.38, 8.5, 9.5]; df_plot.loc['MeanAmplitude'] = [0.32, 6, 8]
+    df_plot.loc['CV_Amplitude'] = [-0.38, 8.5, 9.5]
+    df_plot.loc['MeanAmplitude'] = [0.32, 6, 8]
     df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
 
-# --- GMM TRAIT–STATE CLUSTERING (Data-Driven) ---
+# --------------------------------------------------------------------------------------
+# 5) GMM CLUSTERING
+# --------------------------------------------------------------------------------------
 df_gmm = df_plot.copy()
 df_gmm['Abs_Trait'] = df_gmm['Trait_Link'].abs()
 df_gmm['Abs_Levo']  = df_gmm['Levodopa_Responsiveness'].abs()
 df_gmm['Abs_DBS']   = df_gmm['DBS_Responsiveness'].abs()
 df_gmm['Mean_Response'] = df_gmm[['Abs_Levo', 'Abs_DBS']].mean(axis=1)
+
 scaler = StandardScaler()
 Z = scaler.fit_transform(df_gmm[['Abs_Trait', 'Mean_Response']].values)
 gmm = GaussianMixture(n_components=3, covariance_type='full', random_state=42)
@@ -189,6 +222,7 @@ clusters = gmm.fit_predict(Z)
 probs = gmm.predict_proba(Z)
 df_gmm['GMM_Cluster'] = clusters
 df_gmm['GMM_Conf'] = probs.max(axis=1)
+
 centroids = scaler.inverse_transform(gmm.means_)
 centroid_df = pd.DataFrame(centroids, columns=['Abs_Trait', 'Mean_Response'])
 trait_cluster_idx = centroid_df['Abs_Trait'].idxmax()
@@ -197,24 +231,16 @@ labels = {i: 'Comprehensive' for i in range(len(centroid_df))}
 if trait_cluster_idx != state_cluster_idx:
     labels[trait_cluster_idx] = 'Trait'
     labels[state_cluster_idx] = 'State'
-else:
-    print("[WARNING] The same cluster was identified as highest-trait and highest-state. All labeled as 'Comprehensive'.")
 df_gmm['GMM_Label'] = df_gmm['GMM_Cluster'].map(labels)
 df_plot = df_plot.join(df_gmm[['GMM_Cluster','GMM_Label','GMM_Conf','Abs_Trait','Abs_Levo','Abs_DBS','Mean_Response']])
 
-# --- EXPORT, STATS, AND PRINTING ---
-out_stats_path = os.path.join(plots_dir, "Figure4_TraitState_GMM_Statistics.csv")
-cols = ['Trait_Link','Levodopa_Responsiveness','DBS_Responsiveness','Abs_Trait','Abs_Levo','Abs_DBS','Mean_Response','Category','GMM_Cluster','GMM_Label','GMM_Conf']
-df_plot[cols].sort_values(['GMM_Label','Category','Abs_Trait'], ascending=[True, True, False]).to_csv(out_stats_path)
-print(f"[STATS] GMM classification table saved -> {out_stats_path}")
-print("[STATS] Cluster counts:", df_plot['GMM_Label'].value_counts().to_dict())
 centroid_df_named = centroid_df.copy()
 centroid_df_named['Label'] = [labels[i] for i in range(3)]
 print("[STATS] GMM centroids (|Trait|, Mean|Δ|) by label:\n", centroid_df_named.sort_values('Label'))
 
-
-
-# --- 5) PLOTTING ---
+# --------------------------------------------------------------------------------------
+# 6) PLOTTING (Panels A–C same as original, Panel D enhanced)
+# --------------------------------------------------------------------------------------
 sns.set_context(*PLOT_CONFIG['context'])
 plt.style.use(PLOT_CONFIG['style'])
 fig, axes = plt.subplots(2, 2, figsize=PLOT_CONFIG['figsize'])
@@ -335,108 +361,113 @@ axC.legend(
 )
 
 
-# --- PANEL D: Data-Driven Trait–State Clusters (no double arrows, data-based coords) ---
-import matplotlib.patheffects as pe
+# --------------------------------------------------------------------------------------
+# PANEL D – Enhanced visualization (fixed version)
+# --------------------------------------------------------------------------------------
+def plot_cov_ellipse(ax, mean, cov, color, alpha=0.15, lw=2.0):
+    # Ensure mean is a plain numeric tuple (fix for FutureWarning)
+    mean = np.asarray(mean, dtype=float).ravel()
+    mean = (float(mean[0]), float(mean[1]))
 
-axD.set_title('D) Data-Driven Trait–State Clusters', fontsize=PLOT_CONFIG['title_fontsize'])
+    vals, vecs = np.linalg.eigh(cov)
+    order = vals.argsort()[::-1]
+    vals, vecs = vals[order], vecs[:, order]
+    theta = np.degrees(np.arctan2(*vecs[:,0][::-1]))
+    width, height = 2 * np.sqrt(vals)
+    n_std = 2.0
+    ell = Ellipse(xy=mean, width=n_std*width, height=n_std*height,
+                  angle=theta, facecolor=color, alpha=alpha,
+                  edgecolor=color, lw=lw, zorder=2)
+    ax.add_patch(ell)
+
+label_colors = {'State': '#009E73', 'Trait': '#0072B2', 'Comprehensive': '#999999'}
+
+axD.set_title('D) Data-Driven Trait–State Clusters (Enhanced)', fontsize=PLOT_CONFIG['title_fontsize'])
 axD.set_xlabel('|Trait Link| (abs partial r with DaT)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
-axD.set_ylabel('Mean Therapy Responsiveness\n(mean of |ΔLevodopa|, |ΔDBS|) [%]',
-               fontsize=PLOT_CONFIG['axis_label_fontsize'])
-axD.grid(True, which='both', linestyle='--', alpha=0.35)
-axD.tick_params(axis='both', which='major', labelsize=PLOT_CONFIG['tick_fontsize'])
+axD.set_ylabel('Mean Therapy Responsiveness\n(mean of |ΔLevodopa|, |ΔDBS|) [%]', fontsize=PLOT_CONFIG['axis_label_fontsize'])
+axD.grid(True, linestyle='--', alpha=0.35)
 
-label_colors = {'State': '#009E73', 'Trait': '#0072B2', 'Comprehensive': '#dddddd'}
-N_LABELS_PER_CLUSTER = 5
+# Density shading
+sns.kdeplot(data=df_plot, x='Abs_Trait', y='Mean_Response', hue='GMM_Label',
+            fill=True, alpha=0.08, bw_adjust=1.2, common_norm=False,
+            levels=5, thresh=0.05, ax=axD)
 
-xmax = max(0.01, df_plot['Abs_Trait'].max()) * 1.3
-ymax = max(1.0, df_plot['Mean_Response'].max()) * 1.35
-axD.set_xlim(0, xmax)
-axD.set_ylim(0, ymax)
+# Ellipses (fixed call)
+for i, row in centroid_df.iterrows():
+    cov = gmm.covariances_[i]
+    label = labels[i]
+    col = label_colors[label]
+    center = row[['Abs_Trait', 'Mean_Response']].to_numpy()  # fixed: convert to array
+    plot_cov_ellipse(axD, center, cov, color=col)
 
-texts_to_adjust = []
-artists_to_avoid = []
+# Scatter + centroids
+sns.scatterplot(data=df_plot, x='Abs_Trait', y='Mean_Response', hue='GMM_Label',
+                palette=label_colors, s=110, alpha=0.8, edgecolor='black', linewidth=0.6, ax=axD, zorder=5)
 
-for lab, sub in df_plot.groupby('GMM_Label'):
-    color = label_colors.get(lab, 'grey')
-    if lab == 'Trait':
-        sub_sorted = sub.sort_values('Abs_Trait', ascending=False)
-    elif lab == 'State':
-        sub_sorted = sub.sort_values('Mean_Response', ascending=False)
-    else:
-        sub_sorted = sub.sort_values('Abs_Trait', ascending=False)
+for i, row in centroid_df.iterrows():
+    label = labels[i]
+    axD.scatter(row['Abs_Trait'], row['Mean_Response'], s=500, marker='X',
+                color=label_colors[label], edgecolor='black', linewidth=1.2, zorder=6)
+    axD.text(row['Abs_Trait'] + 0.01, row['Mean_Response'] + 1.2, label,
+             fontsize=14, weight='bold', color=label_colors[label],
+             path_effects=[pe.withStroke(linewidth=3, foreground="white")])
 
-    top_n = sub_sorted.head(N_LABELS_PER_CLUSTER) if lab != 'Comprehensive' else sub_sorted.iloc[0:0]
-    rest = sub_sorted.iloc[N_LABELS_PER_CLUSTER:] if lab != 'Comprehensive' else sub_sorted
+# Legends
+domain_handles = [
+    plt.Line2D([], [], marker=m, color='w', label=k,
+               markerfacecolor=v, markeredgecolor='k', markersize=10)
+    for k, (m, v) in zip(MARKERS.keys(), zip(MARKERS.values(), PLOT_CONFIG['palette'].values()))
+]
+legend1 = axD.legend(handles=domain_handles, title='Feature Domain', loc='upper right', frameon=True, fontsize=11, title_fontsize=13)
+axD.add_artist(legend1)
+legend2 = axD.legend(title='Cluster Type', loc='lower right', fontsize=12, title_fontsize=13)
+legend2.get_frame().set_alpha(0.95)
 
-    rest_scatter = axD.scatter(rest['Abs_Trait'], rest['Mean_Response'],
-                               s=110, alpha=0.45, edgecolor='grey', linewidth=0.6,
-                               color=color, zorder=3, rasterized=True)
-    artists_to_avoid.append(rest_scatter)
+axD.set_xlim(0, df_plot['Abs_Trait'].max()*1.3)
+axD.set_ylim(0, df_plot['Mean_Response'].max()*1.35)
 
-    if not top_n.empty:
-        top_scatter = axD.scatter(top_n['Abs_Trait'], top_n['Mean_Response'],
-                                  s=180, alpha=0.95, edgecolor='black', linewidth=1.1,
-                                  color=color, zorder=5, label=f"{lab} (n={len(sub)})", rasterized=True)
-        artists_to_avoid.append(top_scatter)
+# --------------------------------------------------------------------------------------
+# 7) RADAR SUMMARY (Supplementary)
+# --------------------------------------------------------------------------------------
+def radar_plot(df, savepath):
+    metrics = ['Abs_Trait','Abs_Levo','Abs_DBS']
+    labels_radar = ['|Trait|','|ΔLevo|','|ΔDBS|']
+    N = len(metrics)
+    angles = [n / float(N) * 2 * pi for n in range(N)]
+    angles += angles[:1]
 
-        for idx, row in top_n.iterrows():
-            x, y = row['Abs_Trait'], row['Mean_Response']
-            dx = xmax * 0.02
-            dy = ymax * 0.015
+    cluster_means = df.groupby('GMM_Label')[metrics].mean()
+    figR, axR = plt.subplots(subplot_kw={'polar': True}, figsize=(6,6))
+    for label, row in cluster_means.iterrows():
+        vals = row.tolist() + [row.tolist()[0]]
+        axR.plot(angles, vals, linewidth=2, linestyle='solid', label=label,
+                 color=label_colors[label])
+        axR.fill(angles, vals, alpha=0.15, color=label_colors[label])
+    axR.set_xticks(angles[:-1])
+    axR.set_xticklabels(labels_radar, fontsize=12)
+    axR.set_yticklabels([])
+    axR.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=11)
+    axR.set_title('Cluster Summary: Mean Dopamine–State Metrics', pad=20, fontsize=14, weight='bold')
+    figR.tight_layout()
+    figR.savefig(savepath, dpi=300, bbox_inches='tight')
+    plt.close(figR)
+    print(f"[INFO] Supplementary radar plot saved to: {savepath}")
 
-            ann = axD.annotate(
-                idx,
-                xy=(x, y),
-                xytext=(x + dx, y + dy),
-                textcoords='data',              # unified coordinate system
-                ha='left', va='bottom',
-                fontsize=11.8,
-                bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.85),
-                arrowprops=dict(arrowstyle='-', color='#444444', lw=0.8),  # drawn ONCE
-                zorder=20
-            )
-            ann.set_path_effects([pe.withStroke(linewidth=3.0, foreground="white")])
-            texts_to_adjust.append(ann)
+# Call radar plot
+radar_save_path = os.path.join(plots_dir, "Figure4_Radar_Supplementary.pdf")
+radar_plot(df_plot, radar_save_path)
 
-# Centroids
-axD.scatter(centroid_df['Abs_Trait'], centroid_df['Mean_Response'],
-            s=500, marker='X', color='#cccccc', alpha=1.0, zorder=2,
-            label='Cluster centroids')
-
-# --- ADJUST TEXT (no arrowprops here!) ---
-if texts_to_adjust:
-    adjust_text(
-        texts_to_adjust,
-        ax=axD,
-        add_objects=artists_to_avoid,
-        force_text=(0.6, 0.6),
-        force_points=(0.3, 0.3),
-        expand_points=(1.6, 1.6),
-        lim=250,
-        #no arrowprops here — prevents duplicate arrows
-    )
-
-# Legend
-legD = axD.legend(frameon=True, fancybox=True, fontsize=14,
-                  title='Cluster Type', title_fontsize=16)
-legD.get_frame().set_alpha(0.95)
-
-
-
-# --- FINAL FIGURE ASSEMBLY & SAVE ---
-handles, labels_legend = axA.get_legend_handles_labels()
-by_label = dict(zip(labels_legend, handles))
-
-# --- MODIFICATION: Legend moved to the top center ---
-fig.legend(by_label.values(), by_label.keys(), title='Feature Domain', loc='upper center',
-           bbox_to_anchor=(0.5, 0.975), ncol=len(by_label), fontsize=16, title_fontsize=18, frameon=False)
-# ---------------------------------------------------
-
+# --------------------------------------------------------------------------------------
+# 8) SAVE FINAL FIGURE 4
+# --------------------------------------------------------------------------------------
 plt.tight_layout(rect=[0.02, 0.08, 0.98, 0.96])
-fig.subplots_adjust(wspace=0.2, hspace=0.4) 
-
-out_plot_path = os.path.join(plots_dir, "Figure4_Final_with_GMM_CleanLabels.pdf")
+fig.subplots_adjust(wspace=0.2, hspace=0.4)
+out_plot_path = os.path.join(plots_dir, "Figure4_Final_Enhanced.pdf")
 plt.savefig(out_plot_path, dpi=300, bbox_inches='tight')
-print(f"\n[SUCCESS] Final figure saved to:\n  --> {out_plot_path}")
+plt.close(fig)
 
-print("\n--- SCRIPT COMPLETE ---")
+print("\n[SUCCESS] Enhanced Figure 4 saved to:")
+print(f"  → {out_plot_path}")
+print(f"[INFO] Supplementary radar plot saved to:")
+print(f"  → {radar_save_path}")
+print("\n--- SCRIPT COMPLETE ---\n")
