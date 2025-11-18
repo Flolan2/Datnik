@@ -1,4 +1,4 @@
-# --- START OF FILE datnik_summarize_CSVs.py (MODIFIED to include Age data) ---
+# --- START OF FILE datnik_summarize_CSVs.py (MODIFIED to include Age + Clinical data) ---
 
 import os
 import re
@@ -9,11 +9,11 @@ from datetime import datetime
 
 # Get the current script directory dynamically
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root_dir = os.path.dirname(script_dir) # Assumes script is in a subfolder like 'Online'
-input_folder_path = os.path.join(project_root_dir, 'Input') # Input is sibling to script's parent
+project_root_dir = os.path.dirname(script_dir)  # Assumes script is in a subfolder like 'Online'
+input_folder_path = os.path.join(project_root_dir, 'Input')  # Input is sibling to script's parent
 # Define an output data directory, sibling to 'Input' and 'Online'
 output_data_dir = os.path.join(project_root_dir, 'Output', 'Data_Processed')
-os.makedirs(output_data_dir, exist_ok=True) # Ensure it exists
+os.makedirs(output_data_dir, exist_ok=True)  # Ensure it exists
 
 
 def detect_separator(file_path):
@@ -33,13 +33,14 @@ def detect_separator(file_path):
                     return ';'
                 elif comma_count > semicolon_count and semicolon_count == 0:
                     return ','
-                elif semicolon_count > 0: # Default to semicolon if mixed and it's present
+                elif semicolon_count > 0:  # Default to semicolon if mixed and it's present
                     return ';'
-                else: # Default to comma if mixed and semicolon is not present, or if neither found clearly
+                else:  # Default to comma if mixed and semicolon is not present, or if neither found clearly
                     return ','
     except Exception as e:
         print(f"Warning: Could not detect separator for {os.path.basename(file_path)} - {e}. Assuming ','.")
         return ','
+
 
 def parse_kinematic_filename(filename):
     """
@@ -47,7 +48,7 @@ def parse_kinematic_filename(filename):
     Returns: date_of_visit_str, patient_id, med_condition_standardized, kinematic_task_name, hand_condition_cleaned
     """
     base_name = os.path.splitext(filename)[0]
-    base_name = base_name.replace('_thumbsize', '') # Remove specific suffix if present
+    base_name = base_name.replace('_thumbsize', '')  # Remove specific suffix if present
     parts = base_name.split('_')
 
     if len(parts) < 4:
@@ -87,9 +88,11 @@ def parse_kinematic_filename(filename):
     if med_condition_standardized not in ['off', 'on']:
         print(f"Warning: Unexpected Medication Condition '{med_condition_raw}' in {filename}. Using '{med_condition_standardized}'.")
 
-    if "left" in hand_condition_cleaned.lower(): hand_condition_cleaned = "Left"
-    elif "right" in hand_condition_cleaned.lower(): hand_condition_cleaned = "Right"
-    
+    if "left" in hand_condition_cleaned.lower():
+        hand_condition_cleaned = "Left"
+    elif "right" in hand_condition_cleaned.lower():
+        hand_condition_cleaned = "Right"
+
     return date_of_visit_str, patient_id, med_condition_standardized, kinematic_task_name, hand_condition_cleaned
 
 
@@ -111,19 +114,23 @@ def process_kinematic_subfolder(base_folder_path, task_type_prefix):
     for current_folder in folders_to_scan:
         print(f"--- Scanning folder: {current_folder} ---")
         if not os.path.isdir(current_folder):
-            print(f"Warning: Folder not found, skipping: {current_folder}"); continue
+            print(f"Warning: Folder not found, skipping: {current_folder}")
+            continue
         processed_in_folder, skipped_in_folder = 0, 0
         for filename in os.listdir(current_folder):
-            if not filename.endswith('.csv') or filename.startswith('.'): continue
+            if not filename.endswith('.csv') or filename.startswith('.'):
+                continue
             file_path = os.path.join(current_folder, filename)
             parsed = parse_kinematic_filename(filename)
-            if parsed is None: skipped_in_folder += 1; continue
+            if parsed is None:
+                skipped_in_folder += 1
+                continue
             date_str, pid, med_cond, task_name_from_file, hand_perf = parsed
 
             file_separator = detect_separator(file_path)
             try:
                 header_to_use, names_to_use = 0, None
-                try: # Check for 'attribute;value' style header
+                try:  # Check for 'attribute;value' style header
                     with open(file_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                         first_line = f.readline().strip()
                     expected_header_pat = re.compile(f"attribute\\s*{re.escape(file_separator)}\\s*value", re.IGNORECASE)
@@ -133,24 +140,35 @@ def process_kinematic_subfolder(base_folder_path, task_type_prefix):
                     print(f"Warning: Could not read first line of {filename} to check header: {e_head}. Assuming no header and ['Attribute', 'Value'].")
                     header_to_use, names_to_use = None, ['Attribute', 'Value']
 
+                data_df = pd.read_csv(
+                    file_path, sep=file_separator, header=header_to_use,
+                    names=names_to_use, encoding='utf-8', on_bad_lines='warn'
+                )
 
-                data_df = pd.read_csv(file_path, sep=file_separator, header=header_to_use, names=names_to_use, encoding='utf-8', on_bad_lines='warn')
-                
                 if 'Attribute' not in data_df.columns or 'Value' not in data_df.columns:
                     print(f"Skipping file {filename}: Missing 'Attribute' or 'Value' column after load. Columns found: {data_df.columns.tolist()}")
-                    skipped_in_folder += 1; continue
-                    
+                    skipped_in_folder += 1
+                    continue
+
                 data_df['Attribute'] = data_df['Attribute'].astype(str).str.strip().str.lower()
-                data_df['Value'] = pd.to_numeric(data_df['Value'].astype(str).str.strip().str.replace(',', '.'), errors='coerce')
+                data_df['Value'] = pd.to_numeric(
+                    data_df['Value'].astype(str).str.strip().str.replace(',', '.'),
+                    errors='coerce'
+                )
                 data_df.dropna(subset=['Value'], inplace=True)
-                if data_df.empty: skipped_in_folder += 1; continue
-                
+                if data_df.empty:
+                    skipped_in_folder += 1
+                    continue
+
                 data_df = data_df.drop_duplicates(subset=['Attribute'], keep='first')
                 variables = data_df.set_index('Attribute')['Value'].to_dict()
-                
+
                 single_task_performance = {
-                    'Patient ID': pid, 'Date of Visit': date_str, 'Medication Condition': med_cond,
-                    'Hand_Performed': hand_perf, 'Task_Type': task_type_prefix,
+                    'Patient ID': pid,
+                    'Date of Visit': date_str,
+                    'Medication Condition': med_cond,
+                    'Hand_Performed': hand_perf,
+                    'Task_Type': task_type_prefix,
                     'Original_Task_Name_From_File': task_name_from_file
                 }
                 single_task_performance.update(variables)
@@ -177,13 +195,13 @@ def load_dat_scan(input_folder):
     except Exception as e_load:
         print(f"Error loading DatScan.csv: {repr(e_load)}")
         return None
-    
+
     if dat_scan_df is None or dat_scan_df.empty:
         print("DatScan DataFrame could not be loaded or is empty.")
         return None
 
     current_cols_map_lower = {col.strip().lower(): col for col in dat_scan_df.columns}
-    
+
     rename_dict_flexible = {
         "Patient ID": ["no.", "patient id", "patientid"],
         "Sex": ["gender", "sex"],
@@ -204,10 +222,10 @@ def load_dat_scan(input_folder):
         "Mean_Putamen_Raw":  ["mean putament: new software", "mean putamen: new software", "mean putamen"],
         "Mean_Caudate_Raw":  ["mean caudatet: new software", "mean caudate: new software", "mean caudate"],
     }
-    
+
     actual_rename_dict = {}
     all_target_columns = list(rename_dict_flexible.keys())
-    
+
     for target_name, potential_sources in rename_dict_flexible.items():
         found_source = False
         for source_variant in potential_sources:
@@ -215,23 +233,23 @@ def load_dat_scan(input_folder):
             if source_variant_lower in current_cols_map_lower:
                 actual_rename_dict[current_cols_map_lower[source_variant_lower]] = target_name
                 found_source = True
-                break 
+                break
         if not found_source and target_name not in ["Patient ID", "Date of Scan", "Mean_Striatum_Raw", "Mean_Putamen_Raw", "Mean_Caudate_Raw"]:
             print(f"Info: Critical DaTscan target column '{target_name}' not found in DatScan.csv source columns based on provided variants.")
 
     dat_scan_df.rename(columns=actual_rename_dict, inplace=True)
-    
+
     essential_cols = ["Patient ID", "Date of Scan"]
     final_dat_scan_cols_to_keep = [col for col in essential_cols if col in dat_scan_df.columns]
 
     for target_col_name in all_target_columns:
         if target_col_name in dat_scan_df.columns and target_col_name not in final_dat_scan_cols_to_keep:
             final_dat_scan_cols_to_keep.append(target_col_name)
-            
+
     if "Patient ID" not in dat_scan_df.columns:
         print("Error: 'Patient ID' column is missing in DatScan.csv after attempting to rename. Cannot proceed with DatScan processing.")
         return None
-        
+
     dat_scan_df = dat_scan_df[final_dat_scan_cols_to_keep].copy()
 
     if "Date of Scan" in dat_scan_df.columns:
@@ -249,7 +267,7 @@ def load_dat_scan(input_folder):
         if '_Z' in col or '_Raw' in col:
             if col in dat_scan_df.columns:
                 dat_scan_df[col] = pd.to_numeric(dat_scan_df[col].astype(str).str.replace(',', '.'), errors='coerce')
-        # Convert numeric Sex/Gender (0/1) to categorical text
+    # Convert numeric Sex/Gender (0/1) to categorical text
     if 'Sex' in dat_scan_df.columns:
         print("Info: Converting 'Sex' column from numeric (0/1) to categorical ('Female'/'Male').")
         sex_map = {0: 'Female', 1: 'Male'}
@@ -257,7 +275,6 @@ def load_dat_scan(input_folder):
         dat_scan_df['Sex'] = pd.to_numeric(dat_scan_df['Sex'], errors='coerce')
         dat_scan_df['Sex'] = dat_scan_df['Sex'].map(sex_map)
 
-            
     print(f"Processed DatScan data. Final shape: {dat_scan_df.shape}, Kept columns after processing: {dat_scan_df.columns.tolist()}")
     return dat_scan_df
 
@@ -278,15 +295,16 @@ def merge_dat_scan_hand_specific(kinematic_df, patient_info_df):
         print(f"Warning during PID standardization for kinematic_df for merge: {e_pid_merge_kin}")
 
     merged_df = pd.merge(kinematic_df, patient_info_df, on="Patient ID", how="left", suffixes=('', '_InfoSuffix'))
-    
+
     imaging_keys_base = ['Striatum', 'Putamen', 'Caudate']
     imaging_versions_to_process = ['Z', 'Raw']
 
     def select_ipsi_contra_hand_specific(row):
         hand = row.get('Hand_Performed')
-        if pd.isna(hand): return row 
+        if pd.isna(hand):
+            return row
         hand_clean = str(hand).strip().lower()
-        
+
         side_for_contralateral = None
         side_for_ipsilateral = None
 
@@ -296,7 +314,7 @@ def merge_dat_scan_hand_specific(kinematic_df, patient_info_df):
         elif hand_clean == 'right':
             side_for_contralateral = 'Left'
             side_for_ipsilateral = 'Right'
-        else: 
+        else:
             return row
 
         row_dict = row.to_dict()
@@ -304,7 +322,7 @@ def merge_dat_scan_hand_specific(kinematic_df, patient_info_df):
             for version in imaging_versions_to_process:
                 source_col_contra_name = f"{key_base}_{side_for_contralateral}_{version}"
                 target_col_contra_name = f"Contralateral_{key_base}_{version}"
-                
+
                 value_contra = np.nan
                 if source_col_contra_name in row_dict:
                     value_contra = row_dict.get(source_col_contra_name)
@@ -312,29 +330,29 @@ def merge_dat_scan_hand_specific(kinematic_df, patient_info_df):
 
                 source_col_ipsi_name = f"{key_base}_{side_for_ipsilateral}_{version}"
                 target_col_ipsi_name = f"Ipsilateral_{key_base}_{version}"
-                
+
                 value_ipsi = np.nan
                 if source_col_ipsi_name in row_dict:
                     value_ipsi = row_dict.get(source_col_ipsi_name)
                 row_dict[target_col_ipsi_name] = value_ipsi
-        
+
         return pd.Series(row_dict)
 
     merged_df = merged_df.apply(select_ipsi_contra_hand_specific, axis=1)
-    
+
     cols_to_drop_original_datscan_sides = []
     for key_base in imaging_keys_base:
-        for version in imaging_versions_to_process: 
+        for version in imaging_versions_to_process:
             for side in ['Left', 'Right']:
                 original_side_specific_col = f"{key_base}_{side}_{version}"
                 cols_to_drop_original_datscan_sides.append(original_side_specific_col)
                 cols_to_drop_original_datscan_sides.append(f"{original_side_specific_col}_InfoSuffix")
-    
+
     cols_to_drop_existing = [col for col in cols_to_drop_original_datscan_sides if col in merged_df.columns]
     if cols_to_drop_existing:
         merged_df.drop(columns=cols_to_drop_existing, inplace=True, errors='ignore')
         print(f"Dropped original L/R DatScan columns (Z and Raw): {cols_to_drop_existing}")
-        
+
     return merged_df
 
 
@@ -342,11 +360,11 @@ def load_age_data(input_folder):
     """Loads the Age.csv file, cleans it, and prepares it for merging."""
     age_file_path = os.path.join(input_folder, 'Age.csv')
     print(f"\nAttempting to load Age data from: {age_file_path}")
-    
+
     try:
         # Use encoding='utf-8-sig' to handle potential BOM characters at the start of the file
         age_df = pd.read_csv(age_file_path, sep=';', encoding='utf-8-sig', on_bad_lines='warn')
-        
+
         # --- Data Cleaning and Standardization ---
         # Rename 'No.' to 'Patient ID' to match other dataframes
         if 'No.' in age_df.columns:
@@ -361,10 +379,10 @@ def load_age_data(input_folder):
         else:
             print("Warning: 'Patient ID' or 'Age' column missing after rename. Cannot merge age data.")
             return None
-            
+
         # Drop rows where essential data is missing (handles empty lines at the end)
         age_df.dropna(subset=['Patient ID', 'Age'], inplace=True)
-        
+
         # Standardize 'Patient ID' to be a string, consistent with other dataframes
         age_df['Patient ID'] = age_df['Patient ID'].astype(str).str.strip()
         try:
@@ -373,10 +391,10 @@ def load_age_data(input_folder):
             age_df['Patient ID'] = np.where(numeric_pid.notna(), numeric_pid.astype(int).astype(str), age_df['Patient ID'])
         except Exception as e_pid_std_age:
             print(f"Warning: Could not fully standardize Age.csv Patient IDs: {e_pid_std_age}")
-        
+
         print(f"Successfully loaded and processed Age data. Shape: {age_df.shape}")
         return age_df
-        
+
     except FileNotFoundError:
         print(f"Info: Age.csv not found at {age_file_path}. Proceeding without age data.")
         return None
@@ -385,11 +403,94 @@ def load_age_data(input_folder):
         return None
 
 
+def load_clinical_data(input_folder):
+    """
+    Loads the Clinical_input.csv file, cleans it, and prepares it for merging.
+    We specifically want: Patient ID, Disease_Duration, Diagnose.
+    """
+    clinical_file_path = os.path.join(input_folder, 'Clinical_input.csv')
+    print(f"\nAttempting to load Clinical data from: {clinical_file_path}")
+
+    try:
+        separator = detect_separator(clinical_file_path)
+        clinical_df = pd.read_csv(clinical_file_path, sep=separator, encoding='utf-8-sig', on_bad_lines='warn')
+
+        if clinical_df is None or clinical_df.empty:
+            print("Clinical_input.csv loaded but is empty.")
+            return None
+
+        # Standardize Patient ID column
+        if 'No.' in clinical_df.columns and 'Patient ID' not in clinical_df.columns:
+            clinical_df.rename(columns={'No.': 'Patient ID'}, inplace=True)
+        elif 'Patient ID' not in clinical_df.columns:
+            print("Warning: Neither 'No.' nor 'Patient ID' found in Clinical_input.csv. Cannot merge clinical data.")
+            return None
+
+        # Flexible mapping for Disease Duration and Diagnose
+        cols_lower_map = {c.strip().lower(): c for c in clinical_df.columns}
+
+        disease_duration_col = None
+        for cand in ['disease duration', 'disease_duration', 'krankheitsdauer']:
+            if cand in cols_lower_map:
+                disease_duration_col = cols_lower_map[cand]
+                break
+
+        diagnose_col = None
+        for cand in ['diagnose', 'diagnosis', 'dx', 'diag']:
+            if cand in cols_lower_map:
+                diagnose_col = cols_lower_map[cand]
+                break
+
+        # Rename to standard names if present
+        rename_map = {}
+        if disease_duration_col is not None:
+            rename_map[disease_duration_col] = 'Disease_Duration'
+        if diagnose_col is not None:
+            rename_map[diagnose_col] = 'Diagnose'
+        if rename_map:
+            clinical_df.rename(columns=rename_map, inplace=True)
+
+        # Keep only relevant columns if they exist
+        keep_cols = ['Patient ID']
+        if 'Disease_Duration' in clinical_df.columns:
+            keep_cols.append('Disease_Duration')
+        if 'Diagnose' in clinical_df.columns:
+            keep_cols.append('Diagnose')
+
+        clinical_df = clinical_df[keep_cols].copy()
+        clinical_df.dropna(subset=['Patient ID'], inplace=True)
+
+        # Standardize Patient ID like elsewhere
+        clinical_df['Patient ID'] = clinical_df['Patient ID'].astype(str).str.strip()
+        try:
+            numeric_pid = pd.to_numeric(clinical_df['Patient ID'], errors='coerce')
+            clinical_df['Patient ID'] = np.where(numeric_pid.notna(), numeric_pid.astype(int).astype(str), clinical_df['Patient ID'])
+        except Exception as e_pid_std_clin:
+            print(f"Warning: Could not fully standardize Clinical_input.csv Patient IDs: {e_pid_std_clin}")
+
+        # Ensure Disease_Duration is numeric if present
+        if 'Disease_Duration' in clinical_df.columns:
+            clinical_df['Disease_Duration'] = pd.to_numeric(
+                clinical_df['Disease_Duration'].astype(str).str.replace(',', '.'),
+                errors='coerce'
+            )
+
+        print(f"Successfully loaded and processed Clinical data. Shape: {clinical_df.shape}")
+        return clinical_df
+
+    except FileNotFoundError:
+        print(f"Info: Clinical_input.csv not found at {clinical_file_path}. Proceeding without clinical data.")
+        return None
+    except Exception as e:
+        print(f"Error loading or processing Clinical_input.csv: {repr(e)}")
+        return None
+
+
 # ========================
 # Main Execution Block
 # ========================
 if __name__ == '__main__':
-    print("--- Starting Preprocessing Script (Hand-Centric, Ipsi/Contra Raw&Z, Exclusions, New Filename, with Age) ---")
+    print("--- Starting Preprocessing Script (Hand-Centric, Ipsi/Contra Raw&Z, Exclusions, New Filename, with Age & Clinical) ---")
     fingertapping_path = os.path.join(input_folder_path, 'Fingertapping')
     hand_movements_path = os.path.join(input_folder_path, 'Hand_Movements')
 
@@ -422,9 +523,11 @@ if __name__ == '__main__':
                     df_hm_processed.drop(columns=['Task_Type'], inplace=True, errors='ignore')
 
                 hand_centric_merge_keys = ['Patient ID', 'Date of Visit', 'Medication Condition', 'Hand_Performed']
-                
-                if not df_ft_processed.empty: df_ft_processed = df_ft_processed[df_ft_processed['Hand_Performed'].fillna('').astype(str).str.strip() != '']
-                if not df_hm_processed.empty: df_hm_processed = df_hm_processed[df_hm_processed['Hand_Performed'].fillna('').astype(str).str.strip() != '']
+
+                if not df_ft_processed.empty:
+                    df_ft_processed = df_ft_processed[df_ft_processed['Hand_Performed'].fillna('').astype(str).str.strip() != '']
+                if not df_hm_processed.empty:
+                    df_hm_processed = df_hm_processed[df_hm_processed['Hand_Performed'].fillna('').astype(str).str.strip() != '']
 
                 temp_dedup_keys = hand_centric_merge_keys + ['Original_Task_Name_From_File']
                 if not df_ft_processed.empty:
@@ -434,13 +537,17 @@ if __name__ == '__main__':
                     hm_dedup_keys = [k for k in temp_dedup_keys if k in df_hm_processed.columns]
                     df_hm_processed.drop_duplicates(subset=hm_dedup_keys, keep='first', inplace=True)
 
-                if not df_ft_processed.empty: df_ft_processed.drop(columns=['Original_Task_Name_From_File'], errors='ignore', inplace=True)
-                if not df_hm_processed.empty: df_hm_processed.drop(columns=['Original_Task_Name_From_File'], errors='ignore', inplace=True)
+                if not df_ft_processed.empty:
+                    df_ft_processed.drop(columns=['Original_Task_Name_From_File'], errors='ignore', inplace=True)
+                if not df_hm_processed.empty:
+                    df_hm_processed.drop(columns=['Original_Task_Name_From_File'], errors='ignore', inplace=True)
 
-
-                if df_ft_processed.empty and df_hm_processed.empty: kinematic_summary_df = pd.DataFrame()
-                elif df_ft_processed.empty: kinematic_summary_df = df_hm_processed
-                elif df_hm_processed.empty: kinematic_summary_df = df_ft_processed
+                if df_ft_processed.empty and df_hm_processed.empty:
+                    kinematic_summary_df = pd.DataFrame()
+                elif df_ft_processed.empty:
+                    kinematic_summary_df = df_hm_processed
+                elif df_hm_processed.empty:
+                    kinematic_summary_df = df_ft_processed
                 else:
                     kinematic_summary_df = pd.merge(
                         df_ft_processed,
@@ -450,41 +557,49 @@ if __name__ == '__main__':
 
     if not kinematic_summary_df.empty:
         kinematic_summary_df['Patient ID'] = kinematic_summary_df['Patient ID'].astype(str).str.strip()
-        try: 
+        try:
             numeric_pid_kin_sum = pd.to_numeric(kinematic_summary_df['Patient ID'], errors='coerce')
             kinematic_summary_df['Patient ID'] = np.where(numeric_pid_kin_sum.notna(), numeric_pid_kin_sum.astype(int).astype(str), kinematic_summary_df['Patient ID'])
         except Exception as e_final_pid_ks:
-             print(f"Warning during final PID standardization in kinematic_summary_df: {e_final_pid_ks}")
+            print(f"Warning during final PID standardization in kinematic_summary_df: {e_final_pid_ks}")
 
         kinematic_summary_df['Date of Visit DT'] = pd.to_datetime(kinematic_summary_df['Date of Visit'], format='%d.%m.%Y', errors='coerce')
         kinematic_summary_df.dropna(subset=['Date of Visit DT', 'Hand_Performed'], how='any', inplace=True)
-        
+
         key_cols_dedup_final = ['Patient ID', 'Date of Visit DT', 'Medication Condition', 'Hand_Performed']
         kinematic_summary_df.drop_duplicates(subset=key_cols_dedup_final, keep='first', inplace=True)
         kinematic_summary_df.sort_values(by=['Patient ID', 'Date of Visit DT'], inplace=True)
-        
+
         kinematic_summary_df['Days Since First Visit'] = kinematic_summary_df.groupby('Patient ID')['Date of Visit DT'].transform(
-             lambda x: (x - x.min()).dt.days if pd.notna(x.min()) else np.nan
+            lambda x: (x - x.min()).dt.days if pd.notna(x.min()) else np.nan
         )
 
-        # --- MODIFIED SECTION TO INCLUDE AGE ---
-        # Load both DaTscan and Age data
+        # --- Load DaTscan, Age, and Clinical data ---
         dat_scan_df_loaded = load_dat_scan(input_folder_path)
-        age_df_loaded = load_age_data(input_folder_path) # Call the new function
-        
-        # Prepare a comprehensive patient dataframe by merging DaTscan and Age
+        age_df_loaded = load_age_data(input_folder_path)
+        clinical_df_loaded = load_clinical_data(input_folder_path)
+
+        # Prepare a comprehensive patient dataframe by merging all patient-level data
         patient_info_df = pd.DataFrame()
         if dat_scan_df_loaded is not None and not dat_scan_df_loaded.empty:
             patient_info_df = dat_scan_df_loaded.copy()
-            # If age data is also available, merge it in
+
             if age_df_loaded is not None and not age_df_loaded.empty:
                 print("\nMerging Age data into DaTscan data...")
-                # Use a left merge to keep all patients from the main DaTscan file
                 patient_info_df = pd.merge(patient_info_df, age_df_loaded, on="Patient ID", how="left")
-                print("Merge complete. Patient info DF now contains Age.")
+                print("Merge complete. Patient info DF now contains Age (where available).")
+
+            if clinical_df_loaded is not None and not clinical_df_loaded.empty:
+                print("\nMerging Clinical data (Disease_Duration, Diagnose) into patient info...")
+                patient_info_df = pd.merge(patient_info_df, clinical_df_loaded, on="Patient ID", how="left")
+                print("Merge complete. Patient info DF now contains clinical fields.")
         elif age_df_loaded is not None and not age_df_loaded.empty:
-            # Handle case where only Age.csv is present but not DatScan.csv
             patient_info_df = age_df_loaded.copy()
+            if clinical_df_loaded is not None and not clinical_df_loaded.empty:
+                print("\nMerging Clinical data into Age-only patient info...")
+                patient_info_df = pd.merge(patient_info_df, clinical_df_loaded, on="Patient ID", how="left")
+        elif clinical_df_loaded is not None and not clinical_df_loaded.empty:
+            patient_info_df = clinical_df_loaded.copy()
 
         # Define output path
         output_base_name = f"final_merged_data.csv"
@@ -497,69 +612,72 @@ if __name__ == '__main__':
             merged_df_with_datscan = merge_dat_scan_hand_specific(kinematic_summary_df, patient_info_df)
             final_df_to_save = merged_df_with_datscan
         else:
-            print("\nNo patient-level data (DaTscan or Age) could be loaded. Kinematic summary only.")
+            print("\nNo patient-level data (DaTscan, Age, or Clinical) could be loaded. Kinematic summary only.")
             final_df_to_save = kinematic_summary_df
-        
+
         if not final_df_to_save.empty:
             cols_to_exclude = [
                 'Contralateral_Caudate_new', 'Contralateral_Putamen_new', 'Contralateral_Striatum_new',
-                'Ipsilateral_Caudate_new', 'Ipsilateral_Putamen_new', 'Ipsilateral_Striatum_new', 
+                'Ipsilateral_Caudate_new', 'Ipsilateral_Putamen_new', 'Ipsilateral_Striatum_new',
                 'ft_Kinematic_Task', 'hm_Kinematic_Task',
-                'Original_Task_Name_From_File', 
+                'Original_Task_Name_From_File',
                 'Date of Visit DT'
             ]
             cols_with_suffix_to_exclude = [col for col in final_df_to_save.columns if '_InfoSuffix' in col]
             cols_to_exclude.extend(cols_with_suffix_to_exclude)
-            
-            # Add 'Age' and 'Sex' to the ordered columns for final output
-            ordered_cols = ['Patient ID', 'Date of Visit', 'Medication Condition', 'Hand_Performed', 'Days Since First Visit', 'Age', 'Sex']
-            
+
+            # Add 'Age', 'Sex', 'Disease_Duration', and 'Diagnose' to the ordered columns for final output
+            ordered_cols = ['Patient ID', 'Date of Visit', 'Medication Condition', 'Hand_Performed',
+                            'Days Since First Visit', 'Age', 'Sex', 'Disease_Duration', 'Diagnose']
+
             ft_data_cols = sorted([c for c in final_df_to_save.columns if c.startswith('ft_') and c not in ordered_cols and c not in cols_to_exclude])
             ordered_cols.extend(ft_data_cols)
             hm_data_cols = sorted([c for c in final_df_to_save.columns if c.startswith('hm_') and c not in ordered_cols and c not in cols_to_exclude])
             ordered_cols.extend(hm_data_cols)
-            
+
             contralateral_cols_final = sorted([c for c in final_df_to_save.columns if c.startswith('Contralateral_') and '_new' not in c and c not in ordered_cols and c not in cols_to_exclude])
             ordered_cols.extend(contralateral_cols_final)
             ipsilateral_cols_final = sorted([c for c in final_df_to_save.columns if c.startswith('Ipsilateral_') and '_new' not in c and c not in ordered_cols and c not in cols_to_exclude])
             ordered_cols.extend(ipsilateral_cols_final)
-            
+
             if 'Date of Scan' in final_df_to_save.columns and 'Date of Scan' not in ordered_cols and 'Date of Scan' not in cols_to_exclude:
                 ordered_cols.append('Date of Scan')
-            
+
             other_datscan_cols = []
             if dat_scan_df_loaded is not None:
                 other_datscan_cols = [
-                    c for c in dat_scan_df_loaded.columns 
-                    if c in final_df_to_save.columns and 
-                       c not in ordered_cols and 
+                    c for c in dat_scan_df_loaded.columns
+                    if c in final_df_to_save.columns and
+                       c not in ordered_cols and
                        c not in cols_to_exclude and
                        not c.endswith("_Z") and not c.endswith("_Raw")
                 ]
-                if "Patient ID" in other_datscan_cols: other_datscan_cols.remove("Patient ID")
-                if "Date of Scan" in other_datscan_cols: other_datscan_cols.remove("Date of Scan")
+                if "Patient ID" in other_datscan_cols:
+                    other_datscan_cols.remove("Patient ID")
+                if "Date of Scan" in other_datscan_cols:
+                    other_datscan_cols.remove("Date of Scan")
                 ordered_cols.extend(sorted(other_datscan_cols))
 
             final_selected_cols = [c for c in ordered_cols if c in final_df_to_save.columns and c not in cols_to_exclude]
             remaining_existing_cols = sorted([c for c in final_df_to_save.columns if c not in final_selected_cols and c not in cols_to_exclude])
             final_selected_cols.extend(remaining_existing_cols)
-            
+
             final_selected_cols = list(pd.Series(final_selected_cols).drop_duplicates().tolist())
 
             final_df_to_save = final_df_to_save[final_selected_cols].copy()
 
             try:
                 final_df_to_save.to_csv(final_output_path, index=False, sep=';', decimal='.')
-                print(f"\nFinal hand-centric merged summary (with ipsi/contra Raw & Z & Age) saved to: {final_output_path}")
+                print(f"\nFinal hand-centric merged summary (with ipsi/contra Raw & Z & Age & Clinical) saved to: {final_output_path}")
                 print(f"Final DataFrame shape: {final_df_to_save.shape}")
                 print(f"Final columns: {final_df_to_save.columns.tolist()}")
-            except Exception as e_save: 
+            except Exception as e_save:
                 print(f"Failed to save final summary CSV: {e_save}")
                 print(f"Attempted columns for saving: {final_df_to_save.columns.tolist()}")
         else:
             print("\nFinal DataFrame to save is empty. No output file created.")
-            
+
     else:
         print("\nKinematic summary DataFrame is empty after initial processing. Cannot create output files.")
 
-print("\n--- Preprocessing script execution finished ---")
+    print("\n--- Preprocessing script execution finished ---")
