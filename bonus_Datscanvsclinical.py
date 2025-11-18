@@ -117,9 +117,17 @@ if not results_df.empty:
 print("\n--- Generating Final Polished Supplementary Figure ---")
 if 'significant_df' in locals() and not significant_df.empty:
     try:
-        TOP_N_SCATTERS = 3; fig = plt.figure(figsize=(16, 16))
-        gs = gridspec.GridSpec(3, TOP_N_SCATTERS, figure=fig, hspace=0.5, wspace=0.3)
-        ax_A = fig.add_subplot(gs[0, :]); panel_A_data = significant_df.copy()
+        TOP_N_SCATTERS = 3
+        fig = plt.figure(figsize=(16, 16), constrained_layout=True)
+
+        # --- FINAL LAYOUT FINE-TUNING: Adjust vertical spacing around titles ---
+        # Give the title rows a bit more height (0.1) to create a controllable gap.
+        gs_main = gridspec.GridSpec(5, 1, figure=fig, 
+                                    height_ratios=[0.7, 0.2, 1, 0.2, 1])
+
+        # --- Panel A (Dumbbell Plot) ---
+        ax_A = fig.add_subplot(gs_main[0])
+        panel_A_data = significant_df.copy()
         panel_A_data['abs_r'] = panel_A_data['Correlation_r'].abs()
         sort_order = panel_A_data.groupby('Feature_Name')['abs_r'].mean().sort_values(ascending=True).index
         panel_A_pivot = panel_A_data.pivot_table(index='Feature_Name', columns='Task', values='Correlation_r').reindex(sort_order)
@@ -131,24 +139,46 @@ if 'significant_df' in locals() and not significant_df.empty:
         ax_A.scatter(panel_A_pivot['HM'], y_pos, color='#e85f5f', s=80, zorder=2, marker='s', label='Hand Movements (HM)')
         ax_A.axvline(0, color='black', linestyle='--', linewidth=1); ax_A.set_yticks(y_pos); ax_A.set_yticklabels(y_labels, fontsize=11)
         ax_A.set_xlabel("Partial Correlation (r) with Clinical Score (Age Controlled)", fontsize=12); ax_A.set_title("A) Significant Kinematic-Clinical Correlations", fontsize=14, weight='bold', loc='left')
-        ax_A.legend(); ax_A.grid(axis='y', linestyle=':', alpha=0.6); ax_A.set_xlim(-0.7, 0.7); sns.despine(ax=ax_A, left=True)
-        ax_title_b = fig.add_subplot(gs[1, :]); ax_title_b.set_title("B) Top Finger Tapping Correlates of Clinical Impairment", fontsize=14, weight='bold', pad=20)
-        ax_title_b.set_frame_on(False); ax_title_b.get_xaxis().set_visible(False); ax_title_b.get_yaxis().set_visible(False)
-        ax_title_c = fig.add_subplot(gs[2, :]); ax_title_c.set_title("C) Top Hand Movement Correlates of Clinical Impairment", fontsize=14, weight='bold', pad=20)
-        ax_title_c.set_frame_on(False); ax_title_c.get_xaxis().set_visible(False); ax_title_c.get_yaxis().set_visible(False)
-        axes_B = [fig.add_subplot(gs[1, i]) for i in range(TOP_N_SCATTERS)]; axes_C = [fig.add_subplot(gs[2, i]) for i in range(TOP_N_SCATTERS)]
+        ax_A.legend(frameon=False); ax_A.grid(axis='y', linestyle=':', alpha=0.6); ax_A.set_xlim(-0.7, 0.7); sns.despine(ax=ax_A, left=True)
+        
+        # --- Titles for Panels B and C: Positioned low within their rows ---
+        # Using y=0.2 places the title near the bottom of its invisible axis box.
+        ax_title_b = fig.add_subplot(gs_main[1])
+        ax_title_b.set_title("B) Top Finger Tapping Correlates of Clinical Impairment", fontsize=14, weight='bold', y=0.01)
+        ax_title_b.axis('off')
+
+        ax_title_c = fig.add_subplot(gs_main[3])
+        ax_title_c.set_title("C) Top Hand Movement Correlates of Clinical Impairment", fontsize=14, weight='bold', y=0.01)
+        ax_title_c.axis('off')
+
+        # --- Nested grids for the actual scatter plots ---
+        gs_B = gridspec.GridSpecFromSubplotSpec(1, TOP_N_SCATTERS, subplot_spec=gs_main[2], wspace=0.3)
+        gs_C = gridspec.GridSpecFromSubplotSpec(1, TOP_N_SCATTERS, subplot_spec=gs_main[4], wspace=0.3)
+        
+        axes_B = [fig.add_subplot(gs_B[0, i]) for i in range(TOP_N_SCATTERS)]
+        axes_C = [fig.add_subplot(gs_C[0, i]) for i in range(TOP_N_SCATTERS)]
+        
         task_info = {'FT': {'axes': axes_B, 'color': '#007acc'}, 'HM': {'axes': axes_C, 'color': '#e85f5f'}}
+        
         for task, info in task_info.items():
             task_df_sig = significant_df[significant_df['Task'] == task].copy(); task_df_sig['abs_r'] = task_df_sig['Correlation_r'].abs()
             top_results = task_df_sig.sort_values(by=['Q_Value_FDR', 'abs_r'], ascending=[True, False]).head(TOP_N_SCATTERS)
             for j, (_, row) in enumerate(top_results.iterrows()):
                 ax = info['axes'][j]; kin_col = row['Kinematic_Variable']; feature_name = row['Feature_Name']
                 plot_data = df[[kin_col, 'Clinical_Score']].dropna()
-                sns.regplot(x=kin_col, y='Clinical_Score', data=plot_data, ax=ax, scatter_kws={'alpha': 0.6, 'edgecolor': 'w', 'linewidths': 0.5, 'color': info['color']}, line_kws={'color': 'black', 'linestyle': '--'})
-                ax.set_title(feature_name, fontsize=12, weight='bold'); ax.set_xlabel("Kinematic Feature Value", fontsize=10); ax.set_ylabel("Clinical Score (0-4)", fontsize=10)
-                ax.set_ylim(-0.2, df['Clinical_Score'].dropna().max() + 0.2)
                 
-                # ### --- FINAL TWEAK: Professional formatting for q-values --- ###
+                sns.regplot(
+                    x=kin_col, y='Clinical_Score', data=plot_data, ax=ax, 
+                    y_jitter=0.15,
+                    scatter_kws={'alpha': 0.7, 's': 50, 'edgecolor': 'w', 'linewidths': 0.5, 'color': info['color']}, 
+                    line_kws={'color': 'black', 'linestyle': '--', 'linewidth': 2.5}
+                )
+                
+                ax.set_title(feature_name, fontsize=12, weight='bold'); ax.set_xlabel("Kinematic Feature Value", fontsize=10); ax.set_ylabel("MDS-UPDRS III Sub-Score ", fontsize=10)
+                ax.set_ylim(-0.2, df['Clinical_Score'].dropna().max() + 0.2)
+                ax.grid(True, which='major', linestyle='-', linewidth='0.5', color='lightgrey', zorder=0)
+                sns.despine(ax=ax)
+                
                 if row['Q_Value_FDR'] < 0.001:
                     q_text = "q < 0.001"
                 else:
@@ -158,13 +188,12 @@ if 'significant_df' in locals() and not significant_df.empty:
                 ax.text(0.05, 0.95, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='whitesmoke', alpha=0.8))
 
         fig.suptitle('Supplementary Figure 1: Clinical Validation of Kinematic Features Against Expert Ratings', fontsize=18, weight='bold')
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
-        sfig_path = os.path.join(plots_folder, "SFigure1_Clinical_Validation_Summary_FINAL.png")
-        plt.savefig(sfig_path, dpi=300, bbox_inches='tight')
-        print(f"\n[SUCCESS] Final polished Supplementary Figure saved to: {sfig_path}")
+        
+        sfig_path = os.path.join(plots_folder, "SFigure1_Clinical_Validation_Summary_FINAL.pdf")
+        plt.savefig(sfig_path, format='pdf', bbox_inches='tight')
+        print(f"\n[SUCCESS] Final polished Supplementary Figure saved as PDF to: {sfig_path}")
+
     except Exception as e:
         import traceback; print(f"\n[ERROR] Could not generate Supplementary Figure. Reason: {e}"); traceback.print_exc()
 else:
     print("\n[INFO] Skipping Supplementary Figure generation as no significant results were found.")
-
-print("\n--- Clinical validation script finished ---")
