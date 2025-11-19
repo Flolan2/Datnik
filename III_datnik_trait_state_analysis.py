@@ -1,5 +1,5 @@
-# --- Figure4_Trait_vs_State_Synthesis_Final_Polished_v5_FULL_fixed.py ---
-# Complete, end-to-end version with enhanced Figure 4 visualization (FutureWarning fixed)
+# --- III_datnik_trait_state_analysis.py ---
+# Complete, end-to-end version with enhanced Figure 2 visualization (FutureWarning fixed)
 
 import os
 import sys
@@ -28,7 +28,7 @@ warnings.filterwarnings(
 )
 
 print("\n" + "="*88)
-print("--- RUNNING: Figure 4 — Enhanced Visualization Version (Fixed) ---")
+print("--- RUNNING: Figure 3 — Trait-State Synthesis (Enhanced) ---")
 print("="*88 + "\n")
 
 # --------------------------------------------------------------------------------------
@@ -36,7 +36,7 @@ print("="*88 + "\n")
 # --------------------------------------------------------------------------------------
 PLOT_CONFIG = {
     'figsize': (24, 20),
-    'suptitle': 'Figure 4. Trait–State Map and Clustering of Kinematic Biomarkers',
+    'suptitle': 'Figure 3. Trait–State Map and Clustering of Kinematic Biomarkers',
     'context': ("talk", 1.1),
     'style': 'seaborn-v0_8-whitegrid',
     'palette': {
@@ -540,19 +540,19 @@ def radar_plot(df, savepath):
     print(f"[INFO] Supplementary radar plot saved to: {savepath}")
 
 # Call radar plot
-radar_save_path = os.path.join(plots_dir, "Figure4_Radar_Supplementary.pdf")
+radar_save_path = os.path.join(plots_dir, "Figure 3_Radar_Supplementary.pdf")
 radar_plot(df_plot, radar_save_path)
 
 # --------------------------------------------------------------------------------------
-# 8) SAVE FINAL FIGURE 4
+# 8) SAVE FINAL FIGURE 3
 # --------------------------------------------------------------------------------------
 plt.tight_layout(rect=[0.02, 0.08, 0.98, 0.96])
 fig.subplots_adjust(wspace=0.2, hspace=0.4)
-out_plot_path = os.path.join(plots_dir, "Figure4_Final_Enhanced.pdf")
+out_plot_path = os.path.join(plots_dir, "Figure 3.pdf")
 plt.savefig(out_plot_path, dpi=300, bbox_inches='tight')
 plt.close(fig)
 
-print("\n[SUCCESS] Enhanced Figure 4 saved to:")
+print("\n[SUCCESS] Enhanced Figure 3 saved to:")
 print(f"  → {out_plot_path}")
 print(f"[INFO] Supplementary radar plot saved to:")
 print(f"  → {radar_save_path}")

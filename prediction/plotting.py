@@ -66,7 +66,7 @@ def plot_figure3(summary_df, roc_data, importances_data, output_folder, config):
         else:
             ax_B.text(0.5, 0.5, "Coefficient data could not be generated.", ha='center', va='center'); ax_B.set_title('B) Predictive Kinematic Signature (Finger Tapping)', fontsize=13, weight='bold', loc='left')
 
-        fig.suptitle(f'Figure 3: Prediction of Dopaminergic Deficit (Fixed Threshold Z < {config.ABNORMALITY_THRESHOLD})', fontsize=16, weight='bold')
+        fig.suptitle(f'Figure 2: Prediction of Dopaminergic Deficit', fontsize=16, weight='bold')
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         
         figure_3_filename = os.path.join(output_folder, f"Figure3_Prediction_Summary_FixedThreshold.png")

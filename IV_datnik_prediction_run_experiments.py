@@ -11,7 +11,7 @@ This script performs two distinct, methodologically sound analyses:
       threshold (Z < -1.96). This provides the primary, unbiased performance estimate.
     - Uses an adaptive repetitions framework to ensure a stable estimate of the
       mean ROC AUC.
-    - Generates Figure 3 (ROC curves and feature signature).
+    - Generates Figure 2 (ROC curves and feature signature).
 
 2.  SENSITIVITY ANALYSIS (Threshold Sweep):
     - Characterizes the model's robustness by evaluating its performance across a
@@ -202,7 +202,7 @@ if PERFORM_FIXED_THRESHOLD_RUN:
     final_summary_df_fixed.to_csv(summary_path_fixed, index=False, sep=';', decimal='.')
     logger.info(f"[SUCCESS] Saved fixed-threshold prediction summary to: {summary_path_fixed}")
 
-    # --- Coefficient Collection and Figure 3 Plotting ---
+    # --- Coefficient Collection and Figure 2 Plotting ---
     if config.GENERATE_PLOTS and not final_summary_df_fixed.empty:
         # This re-run loop is for generating a stable feature signature for visualization.
         results_data_importances_fixed = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -226,7 +226,7 @@ if PERFORM_FIXED_THRESHOLD_RUN:
         aggregated_importances = results_processor.aggregate_importances({'group': results_data_importances_fixed}, config, output_dir_override=run_output_data_folder)
         
         # --- Generate Publication-Ready Figure 3 ---
-        logger.info("\n--- Generating Figure 3: Prediction Results Summary (Fixed Threshold) ---")
+        logger.info("\n--- Generating Figure 2: Prediction Results Summary (Fixed Threshold) ---")
         plotting.plot_figure3(
             summary_df=final_summary_df_fixed,
             roc_data=results_data_roc_fixed,
