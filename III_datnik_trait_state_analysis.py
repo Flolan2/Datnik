@@ -1,9 +1,4 @@
 # --- III_datnik_trait_state_analysis.py ---
-# Complete, end-to-end version with enhanced Figure 3 visualization
-# FIXED: 
-# 1. Parsing logic updated for 'Kinematic_Variable' and 'r' columns.
-# 2. LOGIC UPDATE: Restricted analysis to Hand Movements (HM) only, 
-#    as DBS data is unavailable for Finger Tapping (FT).
 
 import os
 import sys
@@ -264,6 +259,16 @@ centroid_df_named = centroid_df.copy()
 centroid_df_named['Label'] = [labels[i] for i in range(3)]
 print("[STATS] GMM centroids (|Trait|, Mean|Δ|) by label:\n", centroid_df_named.sort_values('Label'))
 
+# Save the dataframe containing features, responsiveness, and cluster labels
+output_csv_path = os.path.join(project_root_dir, "Output", "Data", "Figure3_Cluster_Results.csv")
+
+# Ensure the directory exists
+os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+
+# Save to CSV
+df_plot.to_csv(output_csv_path)
+print(f"[INFO] Cluster data saved to: {output_csv_path}")
+
 # --------------------------------------------------------------------------------------
 # 6) PLOTTING (Panels A–C same as original, Panel D enhanced)
 # --------------------------------------------------------------------------------------
@@ -276,7 +281,7 @@ fig.suptitle(PLOT_CONFIG['suptitle'], fontsize=28, weight='bold', y=0.99)
 # --------------------------------------------------------------------------------------
 # PANELS A & B – Density + Highlight Redesign for Clarity
 # --------------------------------------------------------------------------------------
-TOP_N = 4
+TOP_N = 4   
 
 def plot_density_panel(ax, xcol, title, xlabel):
     """Improved scatter-density panel with labeled top features."""
