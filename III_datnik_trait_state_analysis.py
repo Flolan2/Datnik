@@ -1,5 +1,9 @@
 # --- III_datnik_trait_state_analysis.py ---
-# Complete, end-to-end version with enhanced Figure 2 visualization (FutureWarning fixed)
+# Complete, end-to-end version with enhanced Figure 3 visualization
+# FIXED: 
+# 1. Parsing logic updated for 'Kinematic_Variable' and 'r' columns.
+# 2. LOGIC UPDATE: Restricted analysis to Hand Movements (HM) only, 
+#    as DBS data is unavailable for Finger Tapping (FT).
 
 import os
 import sys
@@ -8,11 +12,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
-from adjustText import adjust_text
 import matplotlib.patches as mpatches
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
-import matplotlib as mpl
 from matplotlib.patches import Ellipse
 from sklearn.linear_model import LinearRegression
 import statsmodels.api as sm
@@ -28,7 +30,7 @@ warnings.filterwarnings(
 )
 
 print("\n" + "="*88)
-print("--- RUNNING: Figure 3 — Trait-State Synthesis (Enhanced) ---")
+print("--- RUNNING: Figure 3 — Trait-State Synthesis (HM Only) ---")
 print("="*88 + "\n")
 
 # --------------------------------------------------------------------------------------
@@ -36,7 +38,7 @@ print("="*88 + "\n")
 # --------------------------------------------------------------------------------------
 PLOT_CONFIG = {
     'figsize': (24, 20),
-    'suptitle': 'Figure 3. Trait–State Map and Clustering of Kinematic Biomarkers',
+    'suptitle': 'Figure 3. Trait–State Map and Clustering (Hand Movements)',
     'context': ("talk", 1.1),
     'style': 'seaborn-v0_8-whitegrid',
     'palette': {
@@ -159,52 +161,76 @@ IMPROVE_WHEN_LOWER = [
     'cvrmsvelocity','cvopeningspeed','cvclosingspeed'
 ]
 
-try:
-    trait_file = os.path.join(datscan_input_dir, "all_raw_bivariate_results.csv")
-    df_trait_raw = pd.read_csv(trait_file, sep=';', decimal='.')
-    df_trait_raw['Feature'] = df_trait_raw['Base Kinematic'].map(FEATURE_NAME_MAP)
-    df_trait = df_trait_raw.groupby('Feature')['Correlation (r)'].mean().rename('Trait_Link').to_frame()
+# --- 4.1 Load and Process Trait Data ---
+trait_file = os.path.join(datscan_input_dir, "all_raw_bivariate_results.csv")
+print(f"[LOADING] Trait data from: {trait_file}")
 
-    raw_effect_dbs = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_raw_dbs_effect_Bilateral_Average.csv"), index_col="PatientID")
-    baseline_dbs   = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_baseline_values_Bilateral_Average.csv"), index_col="PatientID")
-    raw_effect_levo = pd.read_csv(os.path.join(stimvision_input_dir, "medication_raw_effect_hand_opening.csv"), index_col="Patient_ID")
-    baseline_levo   = pd.read_csv(os.path.join(stimvision_input_dir, "medication_baseline_hand_opening.csv"), index_col="Patient_ID")
+# Load CSV (handle semicolon separator)
+df_trait_raw = pd.read_csv(trait_file, sep=';', decimal='.')
 
-    for df in [raw_effect_dbs, baseline_dbs, raw_effect_levo, baseline_levo]:
-        df.columns = df.columns.str.lower().map(FEATURE_NAME_MAP)
+# PARSING LOGIC: Extract Task (hm/ft) and Clean Feature Name
+# Expected format: "hm_meanamplitude" -> Task="hm", Base="meanamplitude"
+def parse_kinematic_variable(row):
+    raw_name = str(row['Kinematic_Variable'])
+    if '_' in raw_name:
+        parts = raw_name.split('_', 1) # Split on first underscore
+        return pd.Series([parts[0], parts[1]])
+    return pd.Series([None, raw_name])
 
-    common_features = df_trait.index.intersection(raw_effect_dbs.columns).intersection(raw_effect_levo.columns)
+df_trait_raw[['Task_Prefix', 'Base_Name']] = df_trait_raw.apply(parse_kinematic_variable, axis=1)
 
-    for df in [raw_effect_dbs, raw_effect_levo]:
-        for col in df.columns:
-            names = [k for k, v in FEATURE_NAME_MAP.items() if v == col]
-            if names and names[0] in IMPROVE_WHEN_LOWER:
-                df[col] *= -1
+# FILTER LOGIC: Keep ONLY Hand Movements (hm)
+# Rationale: The DBS cohort only performed HM tasks. To align Trait and State axes validly,
+# we must restrict the analysis to features available in both cohorts.
+df_trait_hm = df_trait_raw[df_trait_raw['Task_Prefix'] == 'hm'].copy()
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        dbs_norm  = (raw_effect_dbs[common_features] / baseline_dbs[common_features].abs()) * 100
-        levo_norm = (raw_effect_levo[common_features] / baseline_levo[common_features].abs()) * 100
+print(f"   -> Filtering for 'hm' (Hand Movement) tasks only. Found {len(df_trait_hm)} rows.")
 
-    dbs_resp  = dbs_norm.median().rename('DBS_Responsiveness')
-    levo_resp = levo_norm.median().rename('Levodopa_Responsiveness')
+# Map to standardized display names
+df_trait_hm['Feature'] = df_trait_hm['Base_Name'].map(FEATURE_NAME_MAP)
+df_trait = df_trait_hm.groupby('Feature')['r'].mean().rename('Trait_Link').to_frame()
 
-    df_plot = df_trait.join(dbs_resp).join(levo_resp).loc[common_features].dropna()
-    df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
-    print(f"[SUCCESS] Loaded and processed {len(df_plot)} common features.")
+print(f"   -> Aggregated to {len(df_trait)} unique HM features.")
 
-except Exception as e:
-    print("Generating DUMMY data for plot generation...")
-    np.random.seed(42)
-    feats = list(FEATURE_NAME_MAP.values()); feats.remove('CV_Amplitude'); feats.remove('MeanAmplitude')
-    df_plot = pd.DataFrame({
-        'Trait_Link': np.random.uniform(-0.4, 0.35, len(feats)),
-        'Levodopa_Responsiveness': np.random.uniform(-30, 40, len(feats)),
-        'DBS_Responsiveness': np.random.uniform(-30, 40, len(feats))
-    }, index=feats)
-    df_plot['DBS_Responsiveness'] = df_plot['Levodopa_Responsiveness'] * 0.8 + np.random.normal(0, 10, len(feats))
-    df_plot.loc['CV_Amplitude'] = [-0.38, 8.5, 9.5]
-    df_plot.loc['MeanAmplitude'] = [0.32, 6, 8]
-    df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
+
+# --- 4.2 Load State Data (DBS & Levodopa) ---
+# Note: These files likely contain columns like 'MeanAmplitude' directly.
+raw_effect_dbs = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_raw_dbs_effect_Bilateral_Average.csv"), index_col="PatientID")
+baseline_dbs   = pd.read_csv(os.path.join(stimvision_input_dir, "all_patients_baseline_values_Bilateral_Average.csv"), index_col="PatientID")
+raw_effect_levo = pd.read_csv(os.path.join(stimvision_input_dir, "medication_raw_effect_hand_opening.csv"), index_col="Patient_ID")
+baseline_levo   = pd.read_csv(os.path.join(stimvision_input_dir, "medication_baseline_hand_opening.csv"), index_col="Patient_ID")
+
+# Normalize column names
+for df in [raw_effect_dbs, baseline_dbs, raw_effect_levo, baseline_levo]:
+    df.columns = df.columns.str.lower().map(FEATURE_NAME_MAP)
+
+# Calculate Intersection
+# We only want features that exist in Trait(HM), Levo(HM), and DBS(HM)
+common_features = df_trait.index.intersection(raw_effect_dbs.columns).intersection(raw_effect_levo.columns)
+
+# Directionality Correction
+for df in [raw_effect_dbs, raw_effect_levo]:
+    for col in df.columns:
+        original_keys = [k for k, v in FEATURE_NAME_MAP.items() if v == col]
+        if original_keys and original_keys[0] in IMPROVE_WHEN_LOWER:
+            df[col] *= -1
+
+# Calculate Responsiveness
+with np.errstate(divide='ignore', invalid='ignore'):
+    dbs_norm  = (raw_effect_dbs[common_features] / baseline_dbs[common_features].abs()) * 100
+    levo_norm = (raw_effect_levo[common_features] / baseline_levo[common_features].abs()) * 100
+
+dbs_resp  = dbs_norm.median().rename('DBS_Responsiveness')
+levo_resp = levo_norm.median().rename('Levodopa_Responsiveness')
+
+# --- 4.3 Merge ---
+df_plot = df_trait.join(dbs_resp).join(levo_resp).loc[common_features].dropna()
+df_plot['Category'] = df_plot.index.to_series().apply(categorize_feature)
+print(f"[SUCCESS] Merged final dataset: {len(df_plot)} features.")
+if len(df_plot) == 0:
+    print("[ERROR] No common features found. Check column mapping.")
+    sys.exit(1)
+
 
 # --------------------------------------------------------------------------------------
 # 5) GMM CLUSTERING
@@ -250,11 +276,7 @@ fig.suptitle(PLOT_CONFIG['suptitle'], fontsize=28, weight='bold', y=0.99)
 # --------------------------------------------------------------------------------------
 # PANELS A & B – Density + Highlight Redesign for Clarity
 # --------------------------------------------------------------------------------------
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib import cm
-
-# How many top features to label per panel
-TOP_N = 6
+TOP_N = 4
 
 def plot_density_panel(ax, xcol, title, xlabel):
     """Improved scatter-density panel with labeled top features."""
@@ -289,12 +311,10 @@ def plot_density_panel(ax, xcol, title, xlabel):
 
     # Highlight top N absolute trait-linked features
     # --- Compute trait-linked but therapy-resistant features ---
-    # Rank: high |Trait_Link|, low |xcol| (Levo/DBS responsiveness)
     df_plot['trait_rank'] = df_plot['Trait_Link'].abs().rank(ascending=False)
     df_plot['resp_rank']  = df_plot[xcol].abs().rank(ascending=True)
     df_plot['trait_resistance_score'] = df_plot['trait_rank'] + df_plot['resp_rank']
     
-    # Select features with best (lowest) combined score
     top_feats = df_plot.nsmallest(TOP_N, 'trait_resistance_score')
 
     sns.scatterplot(
@@ -310,7 +330,6 @@ def plot_density_panel(ax, xcol, title, xlabel):
         label=f'Top {TOP_N} |Trait|'
     )
 
-    # Label those top features
     for i, (feat, row) in enumerate(top_feats.iterrows()):
         ax.text(
             row[xcol] + 1.2,
@@ -328,7 +347,7 @@ def plot_density_panel(ax, xcol, title, xlabel):
     ax.grid(True, linestyle='--', alpha=0.25)
     ax.legend(loc='lower right', fontsize=11, frameon=True)
 
-# --- Panel A: Levodopa (Pharmacological state) ---
+# --- Panel A: Levodopa ---
 plot_density_panel(
     axA,
     'Levodopa_Responsiveness',
@@ -336,7 +355,7 @@ plot_density_panel(
     'Levodopa Responsiveness (% Change)'
 )
 
-# --- Panel B: DBS (Electrical state) ---
+# --- Panel B: DBS ---
 plot_density_panel(
     axB,
     'DBS_Responsiveness',
@@ -347,16 +366,12 @@ axB.set_ylabel('')
 axB.set_yticklabels([])
 
 
-# --- PANEL C: Concordance (Final version — regression + 95% CI + identity line) ---
-from sklearn.linear_model import LinearRegression
-import statsmodels.api as sm
-
+# --- PANEL C: Concordance ---
 # Prepare data
 x = df_plot['Levodopa_Responsiveness'].values.reshape(-1, 1)
 y = df_plot['DBS_Responsiveness'].values
 model = LinearRegression().fit(x, y)
 slope = model.coef_[0]
-intercept = model.intercept_
 r_obs, p_obs = stats.pearsonr(df_plot['Levodopa_Responsiveness'], df_plot['DBS_Responsiveness'])
 
 # Axis limits
@@ -372,12 +387,10 @@ X_fit_sm = sm.add_constant(x_fit)
 y_pred = ols_model.get_prediction(X_fit_sm)
 pred_summary = y_pred.summary_frame(alpha=0.05)  # 95% CI
 
-# Plot: baseline and regression
+# Plot
 axC.axhline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
 axC.axvline(0, color='black', linestyle='-', lw=1, alpha=0.3, zorder=1)
-# axC.plot(lims, lims, '--', color='0.85', linewidth=1, label='x = y (ideal)', zorder=1)
 
-# Regression line (empirical fit)
 axC.plot(
     x_fit,
     pred_summary['mean'],
@@ -388,7 +401,6 @@ axC.plot(
     zorder=4
 )
 
-# Confidence band
 axC.fill_between(
     x_fit,
     pred_summary['mean_ci_lower'],
@@ -399,7 +411,6 @@ axC.fill_between(
     label='95% CI'
 )
 
-# Scatter points
 sns.scatterplot(
     data=df_plot,
     x='Levodopa_Responsiveness',
@@ -415,7 +426,6 @@ sns.scatterplot(
     zorder=5
 )
 
-# Labels & aesthetics
 axC.set_title('C) Concordance of Therapeutic Response', fontsize=PLOT_CONFIG['title_fontsize'])
 axC.set_xlabel('Levodopa Responsiveness (% Change)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
 axC.set_ylabel('DBS Responsiveness (% Change)', fontsize=PLOT_CONFIG['axis_label_fontsize'])
@@ -426,7 +436,6 @@ axC.tick_params(labelsize=PLOT_CONFIG['tick_fontsize'])
 if axC.get_legend():
     axC.get_legend().remove()
 
-# Annotate stats
 p_text = "p < 0.001" if p_obs < 0.001 else f"p = {p_obs:.3f}"
 stats_text = f"r = {r_obs:.2f}\nslope = {slope:.2f}\n{p_text}"
 axC.text(
@@ -437,7 +446,6 @@ axC.text(
     bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='grey', alpha=0.9)
 )
 
-# Legend for reference lines
 axC.legend(
     loc='lower right',
     frameon=True,
@@ -448,10 +456,9 @@ axC.legend(
 
 
 # --------------------------------------------------------------------------------------
-# PANEL D – Enhanced visualization (fixed version)
+# PANEL D – Enhanced visualization
 # --------------------------------------------------------------------------------------
 def plot_cov_ellipse(ax, mean, cov, color, alpha=0.15, lw=2.0):
-    # Ensure mean is a plain numeric tuple (fix for FutureWarning)
     mean = np.asarray(mean, dtype=float).ravel()
     mean = (float(mean[0]), float(mean[1]))
 
@@ -473,20 +480,17 @@ axD.set_xlabel('|Trait Link| (abs partial r with DaT)', fontsize=PLOT_CONFIG['ax
 axD.set_ylabel('Mean Therapy Responsiveness\n(mean of |ΔLevodopa|, |ΔDBS|) [%]', fontsize=PLOT_CONFIG['axis_label_fontsize'])
 axD.grid(True, linestyle='--', alpha=0.35)
 
-# Density shading
 sns.kdeplot(data=df_plot, x='Abs_Trait', y='Mean_Response', hue='GMM_Label',
             fill=True, alpha=0.08, bw_adjust=1.2, common_norm=False,
             levels=5, thresh=0.05, ax=axD)
 
-# Ellipses (fixed call)
 for i, row in centroid_df.iterrows():
     cov = gmm.covariances_[i]
     label = labels[i]
     col = label_colors[label]
-    center = row[['Abs_Trait', 'Mean_Response']].to_numpy()  # fixed: convert to array
+    center = row[['Abs_Trait', 'Mean_Response']].to_numpy()
     plot_cov_ellipse(axD, center, cov, color=col)
 
-# Scatter + centroids
 sns.scatterplot(data=df_plot, x='Abs_Trait', y='Mean_Response', hue='GMM_Label',
                 palette=label_colors, s=110, alpha=0.8, edgecolor='black', linewidth=0.6, ax=axD, zorder=5)
 
@@ -498,7 +502,6 @@ for i, row in centroid_df.iterrows():
              fontsize=14, weight='bold', color=label_colors[label],
              path_effects=[pe.withStroke(linewidth=3, foreground="white")])
 
-# Legends
 domain_handles = [
     plt.Line2D([], [], marker=m, color='w', label=k,
                markerfacecolor=v, markeredgecolor='k', markersize=10)
@@ -539,7 +542,6 @@ def radar_plot(df, savepath):
     plt.close(figR)
     print(f"[INFO] Supplementary radar plot saved to: {savepath}")
 
-# Call radar plot
 radar_save_path = os.path.join(plots_dir, "Figure 3_Radar_Supplementary.pdf")
 radar_plot(df_plot, radar_save_path)
 

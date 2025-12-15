@@ -145,7 +145,7 @@ try:
 except FileNotFoundError:
     sys.exit(f"[FATAL ERROR] File not found: {merged_csv_file}")
 
-clinical_csv_file = os.path.join(project_root_dir, "Input", "Clinical_imput_an.csv")
+clinical_csv_file = os.path.join(project_root_dir, "Input", "Clinical_input.csv")
 try:
     try:
         df_clin = pd.read_csv(clinical_csv_file, sep=';', decimal=',')
