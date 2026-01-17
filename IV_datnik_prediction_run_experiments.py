@@ -33,6 +33,7 @@ import traceback
 from statsmodels.formula.api import ols
 import scipy.stats as stats
 
+
 # --- Path Setup & Module Imports ---
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 if current_script_dir not in sys.path: sys.path.insert(0, current_script_dir)
@@ -46,17 +47,20 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from sklearn.model_selection import StratifiedGroupKFold, RandomizedSearchCV
 
-# --- NEW: Experiment Control Flags ---
+plt.rcParams.update({'savefig.format': 'pdf', 'savefig.dpi': 300})
+    
+
+# --- Experiment Control Flags ---
 PERFORM_FIXED_THRESHOLD_RUN = True   # Run the primary analysis at Z < -1.96
-PERFORM_THRESHOLD_SWEEP_ANALYSIS = True # Run the secondary sensitivity analysis
+PERFORM_THRESHOLD_SWEEP_ANALYSIS = False # Run the secondary sensitivity analysis
 
 # --- Threshold Sweep Configuration (only used if sweep is active) ---
 THRESHOLDS_TO_SWEEP = np.round(np.arange(-3.0, -1.5, 0.1), 2) # e.g., -3.0, -2.9, ..., -1.6
 
 # --- Adaptive Repetition Control ---
 USE_AUTOMATIC_STOPPING_RULE = True
-MIN_REPETITIONS = 100
-MAX_REPETITIONS = 300
+MIN_REPETITIONS = 50
+MAX_REPETITIONS = 1000
 DESIRED_HALF_WIDTH = 0.025
 CONFIDENCE_LEVEL = 0.95
 
@@ -81,8 +85,15 @@ FOCUS_DATSCAN_REGIONS_TO_TEST = ["Contralateral_Putamen_Z"]
 
 # --- Setup Paths, Logging, etc. ---
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-run_output_data_folder = os.path.join(config.DATA_OUTPUT_FOLDER, timestamp)
-run_output_plot_folder = os.path.join(config.PLOT_OUTPUT_FOLDER, timestamp)
+
+run_output_data_folder = os.path.join(config.DATA_OUTPUT_FOLDER, timestamp) 
+run_output_plot_folder = config.PLOT_OUTPUT_FOLDER
+
+os.makedirs(run_output_plot_folder, exist_ok=True)
+
+os.makedirs(run_output_data_folder, exist_ok=True)
+if config.GENERATE_PLOTS: os.makedirs(run_output_plot_folder, exist_ok=True)
+
 os.makedirs(run_output_data_folder, exist_ok=True)
 if config.GENERATE_PLOTS: os.makedirs(run_output_plot_folder, exist_ok=True)
 
@@ -225,16 +236,15 @@ if PERFORM_FIXED_THRESHOLD_RUN:
         
         aggregated_importances = results_processor.aggregate_importances({'group': results_data_importances_fixed}, config, output_dir_override=run_output_data_folder)
         
-        # --- Generate Publication-Ready Figure 3 ---
+        # --- Generate Figure 2 ---
         logger.info("\n--- Generating Figure 2: Prediction Results Summary (Fixed Threshold) ---")
-        plotting.plot_figure3(
+        plotting.plot_figure2(
             summary_df=final_summary_df_fixed,
             roc_data=results_data_roc_fixed,
             importances_data=aggregated_importances,
             output_folder=run_output_plot_folder,
             config=config
         )
-
 
 # ==============================================================================
 # --- ANALYSIS 2: SENSITIVITY ANALYSIS (Z-SCORE THRESHOLD SWEEP) ---
@@ -247,8 +257,6 @@ if PERFORM_THRESHOLD_SWEEP_ANALYSIS:
         logger.info(f"\n\n{'#'*20} TESTING THRESHOLD: Z < {current_threshold} {'#'*20}\n")
         
         results_data_metrics_sweep = collections.defaultdict(list)
-        # For the sweep, use a fixed number of repetitions for consistency.
-        # MIN_REPETITIONS is a good compromise for speed vs. stability.
         num_reps_for_sweep = MIN_REPETITIONS
         
         for i_rep in range(num_reps_for_sweep):
@@ -303,7 +311,7 @@ if PERFORM_THRESHOLD_SWEEP_ANALYSIS:
 
         if config.GENERATE_PLOTS:
             logger.info("\n--- Generating Sensitivity Analysis Plot (AUC vs. Threshold) ---")
-            sweep_plot_filename = os.path.join(run_output_plot_folder, "Figure4_Sensitivity_AUC_vs_Threshold.png")
+            sweep_plot_filename = os.path.join(run_output_plot_folder, "Supplementary Figure.pdf") 
             plotting.plot_performance_vs_threshold(
                 summary_df=final_sweep_summary_df,
                 x_col='Threshold_Value',
@@ -311,7 +319,6 @@ if PERFORM_THRESHOLD_SWEEP_ANALYSIS:
                 filename=sweep_plot_filename,
                 config=config
             )
-    else:
         logger.warning("Threshold sweep analysis completed with no results to summarize or plot.")
 
 

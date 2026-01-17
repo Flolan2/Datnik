@@ -39,7 +39,7 @@ except FileNotFoundError:
         print("Please ensure your project structure is correct (e.g., /Project/Input, /Project/Output, /Project/Scripts).")
         sys.exit()
 
-clinical_csv_file = os.path.join(project_root_dir, "Input", "Clinical_imput_an.csv")
+clinical_csv_file = os.path.join(project_root_dir, "Input", "Clinical_input.csv")
 try:
     df_clinical = pd.read_csv(clinical_csv_file, sep=';', decimal=',')
 except FileNotFoundError:

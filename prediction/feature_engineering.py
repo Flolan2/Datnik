@@ -9,7 +9,6 @@ import logging
 logger = logging.getLogger('DatnikExperiment')
 
 def create_ratios(X: pd.DataFrame, num_col: str, den_col: str, new_col_name: str) -> pd.DataFrame:
-    # ... (this function should remain as it was from the previous successful run) ...
     new_features_df = pd.DataFrame(index=X.index)
     if num_col not in X.columns or den_col not in X.columns:
         missing_cols = []
@@ -95,13 +94,6 @@ def create_log_transform(X: pd.DataFrame, col: str, new_col_name: str) -> pd.Dat
 
     feature_series = pd.to_numeric(X[col], errors='coerce')
     
-    # Check for values that would make log1p undefined (x < -1)
-    # log1p(x) is log(1+x). If x = -1, 1+x = 0, log(0) is -inf. If x < -1, 1+x is negative, log is complex.
-    # For kinematic data, negative values might be rare unless they represent decay or similar.
-    # We will apply log1p, which handles 0 correctly (log1p(0) = 0).
-    # If original values can be < 0 such that 1+x < 0, those will become NaN by np.log1p.
-    
-    # Identify problematic negative values specifically for log1p
     problematic_neg_mask = feature_series < -1
     if problematic_neg_mask.any():
         logger.warning(f"Log transform for '{col}' ('{new_col_name}'): Column contains values < -1. log1p will result in NaN for these entries.")

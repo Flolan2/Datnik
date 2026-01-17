@@ -1,22 +1,13 @@
-# --- START OF FILE prediction/data_loader.py (CORRECTED - KEYERROR FIXED) ---
-# -*- coding: utf-8 -*-
-"""
-Functions for loading and preparing the data FOR BINARY Classification.
-Includes feature engineering capabilities based on global config.
-AGE CONTROL IS NO LONGER DONE HERE. It must be done inside the CV loop.
-"""
-
 import pandas as pd
 import numpy as np
 import os
 import sys
 import logging
 
-# Ensure feature_engineering module can be imported if FE is enabled
 try:
     from . import feature_engineering as fe
 except ImportError:
-    fe = None # Will be checked later if FE is enabled
+    fe = None 
 
 logger = logging.getLogger('DatnikExperiment')
 
@@ -122,16 +113,10 @@ def prepare_data_pre_split(df, config, target_z_score_column_override=None):
                     task_features_map[prefix].extend(engineered_for_task)
                     task_features_map[prefix] = sorted(list(set(task_features_map[prefix])))
 
-    # --- Final Preparation (NO AGE CONTROL) ---
-    # --- CORRECTED SECTION START ---
-    # Combine the features (X_full, which contains original + engineered) with the metadata from data_full
-    # An inner join ensures that only rows present in both are kept, and indices are aligned.
+   
     temp_analysis_df = X_full.join(data_full[required_cols], how='inner')
 
-    # Now drop rows with any NaNs from the correctly combined dataframe
     analysis_df = temp_analysis_df.dropna().copy()
-    # --- CORRECTED SECTION END ---
-
 
     X_full = analysis_df.drop(columns=required_cols, errors='ignore')
     y_continuous = analysis_df[current_target_z_col_name]
@@ -140,10 +125,8 @@ def prepare_data_pre_split(df, config, target_z_score_column_override=None):
     
     all_feature_cols = list(X_full.columns)
 
-    # Final sanity check on alignment
     if not (len(X_full) == len(y_continuous) == len(groups_full) == len(age_full)):
         logger.error(f"CRITICAL FINAL LENGTH MISMATCH after pre-split prep. X:{len(X_full)}, y:{len(y_continuous)}, groups:{len(groups_full)}, age:{len(age_full)}")
         return pd.DataFrame(), pd.Series(dtype='float'), pd.Series(dtype='str'), pd.Series(dtype='float'), {}, []
     
     return X_full, y_continuous, groups_full, age_full, task_features_map, all_feature_cols
-# --- END OF FILE prediction/data_loader.py (CORRECTED - KEYERROR FIXED) ---

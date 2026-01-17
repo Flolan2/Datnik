@@ -1,47 +1,34 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Mon May  5 16:06:54 2025
-
-@author: Lange_L
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Utility functions for the prediction workflow.
-"""
 
 import numpy as np
 import pandas as pd
 import warnings
-import logging # Import logging
+import logging 
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.feature_selection import RFE, SelectKBest # Keep imports for clarity
 
-logger = logging.getLogger('DatnikExperiment') # Get logger instance
+logger = logging.getLogger('DatnikExperiment') 
 
 def convert_numpy_types(obj):
-    """Recursively converts NumPy types in a dictionary or list to native Python types for JSON serialization."""
+    """Recursively converts NumPy types to native Python types (NumPy 2.0 compatible)."""
     if isinstance(obj, dict):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [convert_numpy_types(i) for i in obj]
-    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
-                          np.int16, np.int32, np.int64, np.uint8,
-                          np.uint16, np.uint32, np.uint64)):
+    
+    elif isinstance(obj, np.integer):
         return int(obj)
-    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-        if np.isnan(obj): return None # Represent NaN as None in JSON
-        elif np.isinf(obj): return None # Represent Inf as None
-        else: return float(obj)
-    elif isinstance(obj, (np.ndarray,)):
-        return obj.tolist() # Convert arrays to lists
-    elif isinstance(obj, (np.bool_)):
+    elif isinstance(obj, np.floating):
+        if np.isnan(obj) or np.isinf(obj):
+            return None
+        return float(obj)
+    elif isinstance(obj, np.bool_):
         return bool(obj)
-    elif isinstance(obj, (np.void)):
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.void) or obj is None:
         return None
-    return obj # Return object itself if not a numpy type
-
+        
+    return obj
 def setup_warnings():
     """Sets up warning filters for cleaner output."""
     warnings.filterwarnings("ignore", category=ConvergenceWarning)
@@ -77,9 +64,7 @@ def get_feature_importances(pipeline, feature_names_before_selection):
         if len(pipeline.steps) > 1:
             potential_selector = pipeline.steps[-2][1]
             
-            # --- MODIFICATION START ---
-            # Use a more robust check based on behavior ("duck typing") instead of strict type.
-            # We check if the object has the methods/attributes we need.
+
             if hasattr(potential_selector, 'get_support') and hasattr(potential_selector, 'support_'):
             # --- MODIFICATION END ---
                 support_mask = potential_selector.get_support()
@@ -100,15 +85,13 @@ def get_feature_importances(pipeline, feature_names_before_selection):
         if len(importances_values) == len(selected_feature_names):
             return pd.Series(importances_values, index=selected_feature_names)
         else:
-            # --- MODIFICATION START ---
-            # Replaced print() with logger.warning() for better error tracking.
+
             logger.warning(
                 f"CRITICAL MISMATCH in get_feature_importances: "
                 f"Length of importance values ({len(importances_values)}) "
                 f"does not match length of derived feature names ({len(selected_feature_names)}). "
                 f"This should not happen with the corrected logic. Returning None."
             )
-            # --- MODIFICATION END ---
             return None
 
     except Exception as e:
